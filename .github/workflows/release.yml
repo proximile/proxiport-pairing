@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 is required for the change log to work correctly.
+          # See https://goreleaser.com/ci/actions/
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Optional auto-deploy step. Provide SSH_* repo secrets to enable.
+      # The step is skipped when the secrets are not set, which is the
+      # case on the dev repo.
+      - name: Deploy to running pairing service
+        if: ${{ env.SSH_HOST != '' }}
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KNOWN_HOST: ${{ secrets.SSH_KNOWN_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_PRIV_KEY: ${{ secrets.SSH_PRIV_KEY }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          eval "$(ssh-agent)"
+          ssh-add - <<<"$SSH_PRIV_KEY"
+          mkdir -p ~/.ssh
+          echo "$SSH_KNOWN_HOST" >>~/.ssh/known_hosts
+          ARTIFACT="./dist/proxiport-pairing_linux_x86_64.tar.gz"
+          scp -P "${SSH_PORT}" "${ARTIFACT}" "${SSH_USER}@${SSH_HOST}:/tmp/proxiport-pairing.tar.gz"
+          ssh -p "${SSH_PORT}" -l "${SSH_USER}" "${SSH_HOST}" bash <<'EOF'
+            sudo tar -xzf /tmp/proxiport-pairing.tar.gz -C /usr/local/bin proxiport-pairing
+            sudo systemctl restart proxiport-pairing
+            rm -f /tmp/proxiport-pairing.tar.gz
+          EOF

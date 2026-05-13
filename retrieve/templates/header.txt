@@ -1,0 +1,8 @@
+##
+## This is the ProxiPort client installer script.
+## It quickly installs the ProxiPort agent on a variety of Linux distributions,
+## generates an initial configuration, and connects the agent to your server.
+##
+## For questions, bug reports, or feature requests, use the project's
+## GitHub Issues page: https://github.com/proximile/proxiport-pairing/issues
+##

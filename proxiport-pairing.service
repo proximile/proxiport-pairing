@@ -1,0 +1,33 @@
+[Unit]
+Description=ProxiPort pairing service — install ProxiPort agents with ease.
+Documentation=https://github.com/proximile/proxiport-pairing
+After=network-online.target
+Wants=network-online.target
+ConditionFileIsExecutable=/usr/local/bin/proxiport-pairing
+StartLimitIntervalSec=5
+StartLimitBurst=10
+
+[Service]
+ExecStart=/usr/local/bin/proxiport-pairing -c /etc/proxiport/proxiport-pairing.conf
+User=proxiport
+Group=proxiport
+Restart=always
+RestartSec=10
+# Sandbox: pairing service is stateless and binds to localhost; the
+# reverse proxy in front of it handles TLS and the outside world.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

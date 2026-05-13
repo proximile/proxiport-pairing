@@ -1,0 +1,63 @@
+ProxiPort pairing service
+=========================
+
+The ProxiPort pairing service is licensed under the GNU Affero General
+Public License v3.0 (AGPL-3.0-or-later). See LICENSE for the full
+license text.
+
+The project is fully open source. There is no proprietary plugin host,
+no closed-source component, and no license-gated capability.
+
+
+Origin and attribution
+----------------------
+
+The pairing service is a continuation of the open-source project
+rport-pairing (CloudRadar GmbH, 2022) and its community fork
+openrport/rport-pairing (the openrport authors, 2023-2025). Both
+upstreams shipped their source under the MIT License.
+
+This repository imports the upstream Go source tree and rebrands it.
+The upstream MIT-licensed portions remain covered by their original
+MIT terms (see LICENSE-MIT for the inherited notice). The combined
+work, as distributed by Proximile LLC under the name ProxiPort, is
+AGPL-3.0-or-later.
+
+
+Bundled third-party FOSS components
+-----------------------------------
+
+ProxiPort pairing uses the following FOSS Go modules without
+modification. Each retains its own license. See the upstream project
+for the authoritative copy.
+
+- gorilla/mux — BSD-3-Clause (HTTP routing).
+- patrickmn/go-cache — MIT (in-memory pairing-code cache).
+- spf13/viper — MIT (TOML config loader).
+- go-playground/validator — MIT (deposit-payload validation).
+- iancoleman/strcase — MIT (validation-error formatting).
+- matoous/go-nanoid — MIT (pairing-code generator).
+- stretchr/testify — MIT (test assertions).
+
+The transitive module graph is reproducible from go.mod / go.sum; all
+modules listed there are FOSS-licensed.
+
+
+Names and attribution
+---------------------
+
+"RPort" and "openrport" are names used by the respective upstream
+projects. ProxiPort is not affiliated with, endorsed by, or sponsored
+by RealVNC Limited, CloudRadar GmbH, or the openrport authors.
+"ProxiPort" is the project name used by Proximile LLC.
+
+
+Contact
+-------
+
+If you find a file in this tree that is not FOSS, is missing
+attribution, or you believe is licensed incorrectly, please open an
+issue on this repository — attribution bugs are bugs and we will fix
+them.
+
+Maintainer: Proximile LLC.
