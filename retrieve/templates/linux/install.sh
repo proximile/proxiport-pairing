@@ -38,22 +38,73 @@ test_connection() {
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  goreleaser_arch
+#   DESCRIPTION:  Translate `uname -m` to the arch label goreleaser
+#                 uses in proximile/proxiport release asset names.
+#                 Map mirrors .goreleaser.yml's archive name_template.
+#----------------------------------------------------------------------------------------------------------------------
+goreleaser_arch() {
+  m=$(uname -m)
+  case "$m" in
+    x86_64|amd64) echo "x86_64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    armv7l|armv7) echo "armv7" ;;
+    armv6l|armv6) echo "armv6" ;;
+    i686|i386) echo "i386" ;;
+    s390x) echo "s390x" ;;
+    mips64le) echo "mips64le_hardfloat" ;;
+    mips64) echo "mips64_hardfloat" ;;
+    mipsle) echo "mipsle_hardfloat" ;;
+    mips) echo "mips_hardfloat" ;;
+    *) echo "$m" ;; # last-ditch passthrough; will 404 if unsupported
+  esac
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  latest_release_tag
+#   DESCRIPTION:  Resolve the latest release tag (e.g. "v0.1.0") of
+#                 proximile/proxiport via the GitHub API. Falls back
+#                 to following the /releases/latest redirect if the
+#                 API call fails (rate-limited unauthenticated).
+#----------------------------------------------------------------------------------------------------------------------
+latest_release_tag() {
+  TAG=$(curl -fsS "https://api.github.com/repos/proximile/proxiport/releases/latest" 2>/dev/null \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+  if [ -z "$TAG" ]; then
+    TAG=$(curl -sIL "https://github.com/proximile/proxiport/releases/latest" \
+          | sed -n 's@^location: *.*/tag/\([^/[:space:]]*\).*@\1@Ip' | tail -1)
+  fi
+  if [ -z "$TAG" ]; then
+    abort "Could not determine the latest proximile/proxiport release tag."
+  fi
+  echo "$TAG"
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  download_and_extract
-#   DESCRIPTION:  Download the package from Github and unpack to the temp folder
-#                 https://github.com/proximile/proxiport/releases/ acts a redirector service
-#                 returning the real download URL of GitHub in a more handy fashion
+#   DESCRIPTION:  Download the tarball from github.com/proximile/proxiport
+#                 releases and unpack to the temp folder. Resolves the
+#                 latest tag dynamically and maps the host arch to the
+#                 goreleaser label embedded in the asset name.
 #----------------------------------------------------------------------------------------------------------------------
 download_and_extract() {
   cd "${TMP_FOLDER}"
-  # Download the tar.gz package
+  TAG=$(latest_release_tag)
+  VERSION=${TAG#v}                       # v0.1.0 -> 0.1.0
+  GREL_ARCH=$(goreleaser_arch)
+  ASSET="proxiport_${VERSION}_linux_${GREL_ARCH}.tar.gz"
+  URL="https://github.com/proximile/proxiport/releases/download/${TAG}/${ASSET}"
+  echo "Downloading ${URL}"
   if is_available curl; then
-    curl -LSs "https://github.com/proximile/proxiport/releases/latest/download/proxiport_Linux_${ARCH}.tar.gz" -o proxiport.tar.gz
+    curl -fLSs "${URL}" -o proxiport.tar.gz
   elif is_available wget; then
-    wget -q "https://github.com/proximile/proxiport/releases/latest/download/proxiport_Linux_${ARCH}.tar.gz" -O proxiport.tar.gz
+    wget -q "${URL}" -O proxiport.tar.gz
   else
     abort "No download tool found. Install curl or wget."
   fi
-  # Unpack
+  if [ ! -s proxiport.tar.gz ]; then
+    abort "Downloaded asset is empty: ${URL}"
+  fi
   tar xzf proxiport.tar.gz
 }
 
@@ -333,11 +384,14 @@ install_client() {
               download_and_extract_from_url
               install_bin proxiport
           fi
-      elif is_debian; then
-          install_via_deb_repo
-      elif is_rhel; then
-          install_via_rpm_repo
       else
+          # ProxiPort does not yet publish a Debian or RPM repository,
+          # so don't attempt `install_via_deb_repo` / `install_via_rpm_repo`
+          # — they would try to apt-add a non-existent
+          # repo.proximile.io and silently fail. Use the GitHub-releases
+          # tarball on every distro; the binary is statically linked.
+          # When a native package repo is published, restore the
+          # is_debian / is_rhel branches above this one.
           download_and_extract
           install_bin proxiport
   fi
@@ -496,14 +550,11 @@ finish() {
 #
 
 Thanks for using
-   ____                   _____  _____           _
-  / __ \                 |  __ \|  __ \         | |
- | |  | |_ __   ___ _ __ | |__) | |__) |__  _ __| |_
- | |  | | '_ \ / _ \ '_ \|  _  /|  ___/ _ \| '__| __|
- | |__| | |_) |  __/ | | | | \ \| |  | (_) | |  | |_
-  \____/| .__/ \___|_| |_|_|  \_\_|   \___/|_|   \__|
-        | |
-        |_|
+ ____                _ ____            _
+|  _ \ _ __ _____  _(_)  _ \ ___  _ __| |_
+| |_) | '__/ _ \ \/ / | |_) / _ \| '__| __|
+|  __/| | | (_) >  <| |  __/ (_) | |  | |_
+|_|   |_|  \___/_/\_\_|_|   \___/|_|   \__|
 
 "
 }
