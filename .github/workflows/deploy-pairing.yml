@@ -1,0 +1,133 @@
+name: deploy-pairing
+
+# Fires after a release publication on this repo. Pulls the
+# just-released proxiport-pairing .deb for linux/amd64 and installs
+# it on the canonical pairing droplet behind
+# https://pairing.proxiport.net/.
+#
+# Requires the repo secret `PAIRING_DEPLOY_SSH_KEY` — an Ed25519
+# private key whose public half is in /root/.ssh/authorized_keys
+# on the droplet. The workspace pubkey lives at
+# .secrets/pairing.proxiport.net_deploy.key.pub (it's the dedicated
+# auto-deploy key, NOT the operator's workstation key).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release tag to deploy (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-pairing
+  cancel-in-progress: false
+
+env:
+  PAIRING_HOST: pairing.proxiport.net
+  PAIRING_SSH_USER: root
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download .deb from the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p stage
+          TAG="${{ steps.tag.outputs.tag }}"
+          # Strip leading 'v' from tag; release assets use the bare semver.
+          VER="${TAG#v}"
+          ASSET="proxiport-pairing_${VER}_linux_x86_64.deb"
+          gh release download "$TAG" \
+              --repo "${{ github.repository }}" \
+              --pattern "$ASSET" \
+              --dir stage/
+          ls -la stage/
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PAIRING_DEPLOY_SSH_KEY }}" > ~/.ssh/pairing_deploy
+          chmod 0600 ~/.ssh/pairing_deploy
+          ssh-keyscan -H "$PAIRING_HOST" >> ~/.ssh/known_hosts
+
+      - name: Push .deb to droplet and install
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VER="${TAG#v}"
+          ASSET="proxiport-pairing_${VER}_linux_x86_64.deb"
+          SSH="ssh -i ~/.ssh/pairing_deploy -o StrictHostKeyChecking=yes"
+          SCP="scp -i ~/.ssh/pairing_deploy -o StrictHostKeyChecking=yes"
+
+          $SCP "stage/$ASSET" "$PAIRING_SSH_USER@$PAIRING_HOST:/tmp/proxiport-pairing.deb"
+
+          $SSH "$PAIRING_SSH_USER@$PAIRING_HOST" "
+              set -euxo pipefail
+
+              # First-deploy hygiene: if a hand-installed copy at the
+              # tarball layout still exists (binary at /usr/local/bin/,
+              # unit override at /etc/systemd/system/), retire it so
+              # the package's /lib/systemd/system/ unit + /usr/bin/
+              # binary win. No-op after the first run.
+              if [[ -L /etc/systemd/system/proxiport-pairing.service \
+                    || -f /etc/systemd/system/proxiport-pairing.service ]]; then
+                  systemctl stop proxiport-pairing || true
+                  rm -f /etc/systemd/system/proxiport-pairing.service
+                  rm -f /usr/local/bin/proxiport-pairing
+                  systemctl daemon-reload
+              fi
+
+              # apt-get install rather than dpkg -i so dependencies
+              # resolve cleanly (libc6 only at present, but future
+              # additions stay frictionless).
+              DEBIAN_FRONTEND=noninteractive \
+                  apt-get install -y --reinstall /tmp/proxiport-pairing.deb
+              rm /tmp/proxiport-pairing.deb
+
+              systemctl enable --now proxiport-pairing
+              systemctl restart proxiport-pairing
+          "
+
+      - name: Smoke-test the deploy
+        run: |
+          set -euxo pipefail
+          # Wait for the service to come back, then check it answers HTTP.
+          for i in $(seq 1 30); do
+              CODE=$(curl -sSo /dev/null -w '%{http_code}' "https://$PAIRING_HOST/" || true)
+              [[ "$CODE" == "200" || "$CODE" == "405" ]] && break
+              sleep 2
+          done
+          [[ "$CODE" == "200" || "$CODE" == "405" ]] || {
+              echo "pairing service did not return 200/405 after restart (got $CODE)";
+              exit 1;
+          }
+
+          # Verify the retrieve handler is wired up. A request for a
+          # random 7-char code should miss the cache and return the
+          # canonical "No pairing found" body (the live droplet does
+          # not configure static-deposit, so we can't assert positive
+          # rendering from here).
+          BODY=$(curl -sS "https://$PAIRING_HOST/zzzzzzz")
+          echo "$BODY" | head -5
+          echo "$BODY" | grep -qi 'no pairing found' || {
+              echo "retrieve endpoint did not respond as expected";
+              exit 1;
+          }
+
+          echo "pairing deploy of ${{ steps.tag.outputs.tag }} OK"

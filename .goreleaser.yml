@@ -30,6 +30,57 @@ archives:
       - LICENSE-MIT
       - NOTICE
       - README.md
+nfpms:
+  - id: proxiport-pairing
+    package_name: proxiport-pairing
+    file_name_template: >-
+      {{ .PackageName }}_{{ .Version }}_{{ .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+    builds:
+      - proxiport-pairing
+    vendor: Proximile LLC
+    homepage: https://github.com/proximile/proxiport-pairing
+    maintainer: Proximile LLC <191914090+proximile@users.noreply.github.com>
+    description: |-
+      ProxiPort pairing service. Mints one-shot installer codes that an
+      agent host curls to bring up a ProxiPort agent with its
+      credentials, fingerprint, and connect URL pre-baked. Stateless,
+      binds to localhost — front with a TLS-terminating reverse proxy.
+    license: AGPL-3.0-or-later
+    section: net
+    priority: optional
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: ./proxiport-pairing.conf.example
+        dst: /etc/proxiport/proxiport-pairing.conf.example
+        type: config|noreplace
+      - src: ./opt/systemd/proxiport-pairing.service
+        dst: /lib/systemd/system/proxiport-pairing.service
+      - src: ./LICENSE
+        dst: /usr/share/doc/proxiport-pairing/LICENSE
+      - src: ./LICENSE-MIT
+        dst: /usr/share/doc/proxiport-pairing/LICENSE-MIT
+      - src: ./NOTICE
+        dst: /usr/share/doc/proxiport-pairing/NOTICE
+      - src: ./README.md
+        dst: /usr/share/doc/proxiport-pairing/README.md
+    scripts:
+      preinstall: ./opt/packaging/preinstall.sh
+      postinstall: ./opt/packaging/postinstall.sh
+      preremove: ./opt/packaging/preremove.sh
+      postremove: ./opt/packaging/postremove.sh
+    overrides:
+      deb:
+        dependencies:
+          - libc6
+      rpm:
+        dependencies:
+          - glibc
 checksum:
   name_template: 'checksums.txt'
 snapshot:
