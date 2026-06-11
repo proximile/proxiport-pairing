@@ -1,8 +1,9 @@
 package cache
 
 import (
-	"github.com/patrickmn/go-cache"
 	"time"
+
+	"github.com/patrickmn/go-cache"
 )
 
 // New Create a cache with a default expiration time of 5 minutes, and which

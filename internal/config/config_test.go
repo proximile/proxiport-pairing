@@ -1,9 +1,11 @@
 package config_test
 
 import (
-	"github.com/proximile/proxiport-pairing/internal/config"
-	"github.com/stretchr/testify/assert"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/proximile/proxiport-pairing/internal/config"
 )
 
 func TestConfig(t *testing.T) {

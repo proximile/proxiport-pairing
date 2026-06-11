@@ -6,8 +6,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gorilla/mux"
+
 	"github.com/proximile/proxiport-pairing/cors"
 	"github.com/proximile/proxiport-pairing/deposit"
 	"github.com/proximile/proxiport-pairing/internal/cache"
@@ -50,5 +52,13 @@ func main() {
 	r.Path("/{pairingCode:[0-9 a-z A-Z]{7}}").Methods("GET").Handler(installerHandler)
 
 	log.Println("proxiport-pairing", Version, "listening on", cfg.Server.Address)
-	log.Fatal(http.ListenAndServe(cfg.Server.Address, r))
+	srv := &http.Server{
+		Addr:              cfg.Server.Address,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }

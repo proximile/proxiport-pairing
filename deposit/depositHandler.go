@@ -4,14 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/go-playground/validator/v10"
-	"github.com/iancoleman/strcase"
-	"github.com/matoous/go-nanoid/v2"
-	"github.com/patrickmn/go-cache"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/iancoleman/strcase"
+	gonanoid "github.com/matoous/go-nanoid/v2"
+	"github.com/patrickmn/go-cache"
 )
 
 var validate *validator.Validate
@@ -19,6 +20,7 @@ var validate *validator.Validate
 const alphabet = "abcdefghijklmnpqrstuvwyxzABCDEFGHIJKLMNPQRSTUVWXYZ123456789" // Chars used to generate the code
 const ttl = 300 * time.Second                                                  // Cache items aka pairing code lifetime
 const formMaxMem = 256                                                         // Maximum memory bytes used to load form contents for parsing
+const maxBodyBytes = 64 << 10                                                  // Hard cap on the request body; deposits are a handful of short fields
 
 type Handler struct {
 	Cache     *cache.Cache
@@ -26,6 +28,7 @@ type Handler struct {
 }
 
 func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(rw, r.Body, maxBodyBytes)
 	deposit := &Deposit{}
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		err := json.NewDecoder(r.Body).Decode(&deposit)
@@ -34,6 +37,8 @@ func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		// #nosec G120 -- r.Body is wrapped with http.MaxBytesReader at the
+		// top of ServeHTTP, so the parse is bounded to maxBodyBytes.
 		err := r.ParseMultipartForm(formMaxMem)
 		if err != nil {
 			log.Printf("Error %v\n", err)
@@ -48,7 +53,7 @@ func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	_, err := validateInput(deposit)
 	if err != nil {
 		rw.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintln(rw, "input validation failed: ", err)
+		_, _ = fmt.Fprintln(rw, "input validation failed: ", err)
 		return
 	}
 

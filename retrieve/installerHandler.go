@@ -2,10 +2,12 @@ package retrieve
 
 import (
 	"fmt"
-	"github.com/gorilla/mux"
-	"github.com/proximile/proxiport-pairing/deposit"
-	"github.com/patrickmn/go-cache"
 	"net/http"
+
+	"github.com/gorilla/mux"
+	"github.com/patrickmn/go-cache"
+
+	"github.com/proximile/proxiport-pairing/deposit"
 )
 
 type InstallerHandler struct {
@@ -26,7 +28,10 @@ func (rh *InstallerHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		val, found := rh.Cache.Get(pairingCode)
 		if !found {
 			rw.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(rw, "#No pairing found by pairing code %s\n", pairingCode)
+			// #nosec G705 -- pairingCode is constrained to [0-9a-zA-Z]{7}
+			// by the mux route pattern, and the response is a plain-text
+			// script download, not HTML.
+			_, _ = fmt.Fprintf(rw, "#No pairing found by pairing code %s\n", pairingCode)
 			return
 		}
 		data = val.(deposit.Deposit)

@@ -25,11 +25,11 @@ func includeFile(rw http.ResponseWriter, name string) {
 	if fr, err := templates.ReadFile(name); err != nil {
 		log.Printf("error reading file %s: %s", name, err)
 	} else {
-		fmt.Fprintf(rw, "\n# BEGINNING of %s %s|\n\n", name, strings.Repeat("-", 102-len(name)))
+		_, _ = fmt.Fprintf(rw, "\n# BEGINNING of %s %s|\n\n", name, strings.Repeat("-", 102-len(name)))
 		if _, err := rw.Write(fr); err != nil {
 			log.Println("error writing http response: ", err)
 		}
-		fmt.Fprintf(rw, "\n# END of %s %s|\n\n", name, strings.Repeat("-", 108-len(name)))
+		_, _ = fmt.Fprintf(rw, "\n# END of %s %s|\n\n", name, strings.Repeat("-", 108-len(name)))
 	}
 }
 
@@ -41,22 +41,25 @@ func includeFileRaw(rw http.ResponseWriter, name string) {
 		if _, err := rw.Write(fr); err != nil {
 			log.Println("error writing http response: ", err)
 		}
-		fmt.Fprintln(rw)
+		_, _ = fmt.Fprintln(rw)
 	}
 }
 
 // Render a template and write it to the response writer
 func renderTemplate(rw http.ResponseWriter, tplFile string, data interface{}) {
-	fmt.Fprintf(rw, "## BEGINNING of rendered template %s\n", tplFile)
+	_, _ = fmt.Fprintf(rw, "## BEGINNING of rendered template %s\n", tplFile)
 	tpl, err := template.ParseFS(templates, tplFile)
 	if err != nil {
-		fmt.Fprintf(rw, "# parsing template file %s failed:%s", tplFile, err)
+		_, _ = fmt.Fprintf(rw, "# parsing template file %s failed:%s", tplFile, err)
 		log.Printf("parsing template file %s failed:%s", tplFile, err)
 		return
 	}
+	// #nosec G708 -- the template source is embedded in the binary; the
+	// user-supplied data is sanitized by deposit.SanitizeForBash /
+	// SanitizeForPowerShell before it reaches this call.
 	if err := tpl.Execute(rw, data); err != nil {
-		fmt.Fprintf(rw, "# executing template file '%s' failed: %s", tplFile, err)
+		_, _ = fmt.Fprintf(rw, "# executing template file '%s' failed: %s", tplFile, err)
 		log.Printf("executing template file '%s' failed: %s", tplFile, err)
 	}
-	fmt.Fprintf(rw, "\n## END of rendered template %s\n\n", tplFile)
+	_, _ = fmt.Fprintf(rw, "\n## END of rendered template %s\n\n", tplFile)
 }

@@ -5,8 +5,9 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/proximile/proxiport-pairing/deposit"
 	"github.com/spf13/viper"
+
+	"github.com/proximile/proxiport-pairing/deposit"
 )
 
 type Config struct {
@@ -29,7 +30,7 @@ func New(confFile string) *Config {
 	}
 	err := viper.ReadInConfig()
 	if err != nil {
-		panic(fmt.Errorf("Fatal error: %w \n", err))
+		panic(fmt.Errorf("fatal error reading config: %w", err))
 	}
 	viper.SetDefault("server.address", "127.0.0.1:8080")
 	viper.SetDefault("server.url", "https://pairing.example.com")

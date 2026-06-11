@@ -1,11 +1,13 @@
 package cors_test
 
 import (
-	"github.com/proximile/proxiport-pairing/cors"
-	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/proximile/proxiport-pairing/cors"
 )
 
 func TestHandler_ServeHTTP(t *testing.T) {

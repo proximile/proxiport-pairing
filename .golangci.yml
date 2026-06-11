@@ -1,0 +1,57 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  issues-exit-code: 1
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    gocyclo:
+      min-complexity: 40
+    govet:
+      enable:
+        - shadow
+    misspell:
+      locale: US
+    revive:
+      confidence: 0.8
+    unparam:
+      check-exported: false
+
+  exclusions:
+    rules:
+      - linters:
+          - gosec
+        text: "G404: Use of weak random number generator"
+      - linters:
+          - govet
+        text: 'shadow: declaration of "err" shadows'
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/proximile/proxiport-pairing

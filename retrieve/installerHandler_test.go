@@ -2,16 +2,18 @@ package retrieve_test
 
 import (
 	"fmt"
-	"github.com/gorilla/mux"
-	"github.com/proximile/proxiport-pairing/deposit"
-	"github.com/proximile/proxiport-pairing/internal/cache"
-	"github.com/proximile/proxiport-pairing/retrieve"
-	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/mux"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/proximile/proxiport-pairing/deposit"
+	"github.com/proximile/proxiport-pairing/internal/cache"
+	"github.com/proximile/proxiport-pairing/retrieve"
 )
 
 type TestInstallerWith struct {

@@ -3,16 +3,18 @@ package deposit_test
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/proximile/proxiport-pairing/deposit"
-	"github.com/proximile/proxiport-pairing/internal/cache"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/proximile/proxiport-pairing/deposit"
+	"github.com/proximile/proxiport-pairing/internal/cache"
 )
 
 var FormFields = map[string]string{

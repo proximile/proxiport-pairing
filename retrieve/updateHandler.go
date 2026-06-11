@@ -1,8 +1,9 @@
 package retrieve
 
 import (
-	"github.com/proximile/proxiport-pairing/deposit"
 	"net/http"
+
+	"github.com/proximile/proxiport-pairing/deposit"
 )
 
 type UpdateHandler struct {
