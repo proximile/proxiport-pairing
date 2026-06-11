@@ -37,48 +37,8 @@ test_connection() {
   fi
 }
 
-#---  FUNCTION  -------------------------------------------------------------------------------------------------------
-#          NAME:  goreleaser_arch
-#   DESCRIPTION:  Translate `uname -m` to the arch label goreleaser
-#                 uses in proximile/proxiport release asset names.
-#                 Map mirrors .goreleaser.yml's archive name_template.
-#----------------------------------------------------------------------------------------------------------------------
-goreleaser_arch() {
-  m=$(uname -m)
-  case "$m" in
-    x86_64|amd64) echo "x86_64" ;;
-    aarch64|arm64) echo "arm64" ;;
-    armv7l|armv7) echo "armv7" ;;
-    armv6l|armv6) echo "armv6" ;;
-    i686|i386) echo "i386" ;;
-    s390x) echo "s390x" ;;
-    mips64le) echo "mips64le_hardfloat" ;;
-    mips64) echo "mips64_hardfloat" ;;
-    mipsle) echo "mipsle_hardfloat" ;;
-    mips) echo "mips_hardfloat" ;;
-    *) echo "$m" ;; # last-ditch passthrough; will 404 if unsupported
-  esac
-}
-
-#---  FUNCTION  -------------------------------------------------------------------------------------------------------
-#          NAME:  latest_release_tag
-#   DESCRIPTION:  Resolve the latest release tag (e.g. "v0.1.0") of
-#                 proximile/proxiport via the GitHub API. Falls back
-#                 to following the /releases/latest redirect if the
-#                 API call fails (rate-limited unauthenticated).
-#----------------------------------------------------------------------------------------------------------------------
-latest_release_tag() {
-  TAG=$(curl -fsS "https://api.github.com/repos/proximile/proxiport/releases/latest" 2>/dev/null \
-        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-  if [ -z "$TAG" ]; then
-    TAG=$(curl -sIL "https://github.com/proximile/proxiport/releases/latest" \
-          | sed -n 's@^location: *.*/tag/\([^/[:space:]]*\).*@\1@Ip' | tail -1)
-  fi
-  if [ -z "$TAG" ]; then
-    abort "Could not determine the latest proximile/proxiport release tag."
-  fi
-  echo "$TAG"
-}
+# NOTE: goreleaser_arch() and latest_release_tag() are defined in
+# functions.sh (shared with the update script).
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  download_and_extract
@@ -409,7 +369,6 @@ install_client() {
   fi
   create_sudoers_updates
   [ "$ENABLE_SUDO" -eq 1 ] && create_sudoers_all
-  [ "$INSTALL_TACO" -eq 1 ] && install_tacoscript
   verify_and_terminate
 }
 
@@ -512,7 +471,6 @@ Options:
 -r  Enable file reception. (sending files from server to client)
 -b  Create sudo rule for file reception to give full filesystem write access. Requires -r.
 -a  <USER> Use a different user account than 'proxiport'. Will be created if not present.
--i  Install Tacoscript along with the ProxiPort client.
 -l  Install with SELinux enabled.
 -g <TAG> Add an extra tag to the client.
 -d Do not use /etc/machine-id to identify this machine. A random UUID will be used instead.
@@ -572,7 +530,7 @@ Try the following to investigate:
 
 2) tail /var/log/proxiport/proxiport.log
 
-3) Ask for help on https://docs.proxiport.net/need-help/request-support
+3) Ask for help on https://github.com/proximile/proxiport/issues
 "
   if runs_with_selinux; then
     echo "
@@ -604,7 +562,6 @@ ACTION=install_client
 ENABLE_COMMANDS=0
 ENABLE_SUDO=0
 RELEASE=stable
-INSTALL_TACO=0
 SELINUX_FORCE=0
 ENABLE_FILEREC=0
 ENABLE_FILEREC_SUDO=0
@@ -627,7 +584,6 @@ while getopts 'phvfcsuxstildrba:g:z:' opt; do
   x) ENABLE_COMMANDS=1 ;;
   s) ENABLE_SUDO=1 ;;
   t) RELEASE=unstable ;;
-  i) INSTALL_TACO=1 ;;
   l) SELINUX_FORCE=1 ;;
   r) ENABLE_FILEREC=1 ;;
   b) ENABLE_FILEREC_SUDO=1 ;;

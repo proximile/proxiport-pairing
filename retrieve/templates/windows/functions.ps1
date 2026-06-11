@@ -20,7 +20,7 @@ Try the following to investigate:
 
 3) READ THE DOCS on https://docs.proxiport.net
 
-4) Request support on https://github.com/proximile/proxiport-pairing/discussions/categories/help-needed
+4) Request support on https://github.com/proximile/proxiport/issues
 "
     Set-Location $myLocation
     exit 1
@@ -201,83 +201,6 @@ function Enable-InterpreterAlias
         }
     }
     $configContent
-}
-
-# Update Tacoscript
-function Install-Tacoupdate
-{
-    $Temp = [System.Environment]::GetEnvironmentVariable('TEMP', 'Machine')
-    $tacoUpdate = $Temp + '\tacoupdate.zip'
-    Set-Location $Temp
-    if ((Out-String -InputObject (& 'C:\Program Files\tacoscript\bin\tacoscript.exe' --version)) -match "Version: (.*)")
-    {
-        $tacoVersion = $matches[1].trim()
-        $tacoUpdateUrl = "https://github.com/proximile/proxiport/releases/latest"
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $tacoUpdateUrl -OutFile $tacoUpdate -UseBasicParsing
-        If ((Get-Item tacoupdate.zip).length -eq 0)
-        {
-            Write-Output "* No Tacoscript update needed. You are on the latest $tacoVersion version."
-            Remove-Item tacoupdate.zip -Force
-            return
-        }
-        $dest = "C:\Program Files\tacoscript"
-        Expand-Zip -Path $tacoUpdate -DestinationPath $dest
-        Move-Item "$( $dest )\tacoscript.exe" "$( $dest )\bin" -Force
-        Write-Output "* Tacoscript updated to $( (& "$( $dest )\bin\tacoscript.exe" --version) -match "Version" )"
-        Remove-Item $tacoUpdate -Force|Out-Null
-    }
-}
-
-# Install Tacoscript
-function Install-Tacoscript
-{
-    $tacoDir = "C:\Program Files\tacoscript"
-    $tacoBin = $tacoDir + '\bin\tacoscript.exe'
-    if (Test-Path -Path $tacoBin)
-    {
-        Write-Output "* Tacoscript already installed to $( $tacoBin )"
-        Install-Tacoupdate
-        return
-    }
-    $Temp = [System.Environment]::GetEnvironmentVariable('TEMP', 'Machine')
-    Set-Location $Temp
-    $url = "https://github.com/proximile/proxiport/releases/latest"
-    $file = $temp + "\tacoscript.zip"
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
-    Write-Output "* Tacoscript dowloaded to $( $file )"
-    New-Item -ItemType Directory -Force -Path "$( $tacoDir )"|Out-Null
-    Expand-Zip -Path $file -DestinationPath $tacoDir
-    New-Item -ItemType Directory -Force -Path "$( $tacoDir )\bin"|Out-Null
-    Move-Item "$( $tacoDir )\tacoscript.exe" "$( $tacoDir )\bin\"
-    $ENV:PATH = "$ENV:PATH;$( $tacoDir )\bin"
-
-    [Environment]::SetEnvironmentVariable(
-            "Path",
-            [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine) + ";$( $tacoDir )\bin",
-            [EnvironmentVariableTarget]::Machine
-    )
-    Write-Output "* Tacoscript installed to '$( $tacoDir )' $( (tacoscript.exe --version) -match "Version" )"
-    Remove-Item $file -force
-    # Create an uninstaller script for Tacoscript
-    Set-Content -Path "$( $tacoDir )\uninstall.bat" -Value 'echo off
-echo off
-net session > NUL
-IF %ERRORLEVEL% EQU 0 (
-    ECHO You are Administrator. Fine ...
-) ELSE (
-    ECHO You are NOT Administrator. Exiting...
-    PING -n 5 127.0.0.1 > NUL 2>&1
-    EXIT /B 1
-)
-echo Removing Tacoscript now
-ping -n 5 127.0.0.1 > null
-rmdir /S /Q "%PROGRAMFILES%"\tacoscript\
-echo Tacoscript removed
-ping -n 2 127.0.0.1 > null
-'
-    Write-Output "* Tacoscript uninstaller created in $( $tacoDir )\uninstall.bat."
 }
 
 function Test-TomlKeyExist
@@ -522,6 +445,35 @@ function Optimize-ServiceStartup
     #@formatter:on
 }
 
+# Resolve the latest release tag (e.g. "v0.1.4") of proximile/proxiport
+# via the GitHub API, falling back to the /releases/latest redirect.
+function Get-LatestReleaseTag
+{
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    try
+    {
+        $resp = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/proximile/proxiport/releases/latest"
+        if ($resp.tag_name)
+        {
+            return $resp.tag_name
+        }
+    }
+    catch
+    {
+        Write-Information "* GitHub API lookup failed, following the releases/latest redirect instead."
+    }
+    $request = [System.Net.WebRequest]::Create("https://github.com/proximile/proxiport/releases/latest")
+    $request.AllowAutoRedirect = $true
+    $response = $request.GetResponse()
+    $tag = ($response.ResponseUri.AbsolutePath -split '/')[-1]
+    $response.Close()
+    if (-not $tag)
+    {
+        Write-Error "Could not determine the latest proximile/proxiport release tag."
+    }
+    return $tag
+}
+
 function Invoke-Download
 {
     Param(
@@ -535,11 +487,7 @@ function Invoke-Download
         # Download from a custom URL given by global switch
         if ($pkgUrl -match ("^http.*windows_x86_64.zip"))
         {
-            $downloadFile = "C:\Windows\temp\proxiport_Windows_x86_64.zip"
-        }
-        elseif ($pkgUrl -match ("^http.*windows_x86_64.msi"))
-        {
-            $downloadFile = "C:\Windows\temp\proxiport_Windows_x86_64.msi"
+            $downloadFile = "C:\Windows\temp\proxiport_windows_x86_64.zip"
         }
         else
         {
@@ -559,8 +507,20 @@ function Invoke-Download
     }
     else
     {
-        $downloadFile = "C:\Windows\temp\proxiport_$( $release )_Windows_x86_64.msi"
-        $url = "https://github.com/proximile/proxiport/releases/latest/download/proxiport_Windows_x86_64.msi"
+        # Download the zip of the latest GitHub release. ProxiPort
+        # publishes no MSI packages.
+        $tag = Get-LatestReleaseTag
+        $version = $tag -replace '^v', ''
+        if ($gt -ne "0" -and $version -eq $gt)
+        {
+            # Already on the latest version: hand back an empty file,
+            # which callers treat as "no update needed".
+            $downloadFile = "C:\Windows\temp\proxiport-up-to-date.zip"
+            New-Item -ItemType File -Force -Path $downloadFile | Out-Null
+            return $downloadFile
+        }
+        $downloadFile = "C:\Windows\temp\proxiport_$( $version )_windows_x86_64.zip"
+        $url = "https://github.com/proximile/proxiport/releases/download/$( $tag )/proxiport_$( $version )_windows_x86_64.zip"
     }
 
     if (Test-Path $downloadFile -PathType leaf)

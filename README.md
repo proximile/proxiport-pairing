@@ -85,13 +85,22 @@ sudo sh proxiport-update.sh
 ## Install and run your own
 
 The pairing service is stateless and tiny — running your own copy is
-cheap. Pull the release tarball for your architecture from the GitHub
-releases page:
+cheap. On Debian/Ubuntu the easiest path is the `.deb` package from
+the GitHub releases page (there is an `.rpm` too); it installs the
+binary, the systemd unit, and the example config in one step:
+
+```bash
+VERSION=$(curl -fsS https://api.github.com/repos/proximile/proxiport-pairing/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -LO "https://github.com/proximile/proxiport-pairing/releases/download/v${VERSION}/proxiport-pairing_${VERSION}_linux_$(uname -m).deb"
+sudo apt-get install ./proxiport-pairing_${VERSION}_linux_$(uname -m).deb
+```
+
+Or install by hand from the release tarball:
 
 ```bash
 cd /tmp
-curl -LO https://github.com/proximile/proxiport-pairing/releases/latest/download/proxiport-pairing_Linux_$(uname -m).tar.gz
-tar xf proxiport-pairing_Linux_*.tar.gz
+curl -LO https://github.com/proximile/proxiport-pairing/releases/latest/download/proxiport-pairing_linux_$(uname -m).tar.gz
+tar xf proxiport-pairing_linux_*.tar.gz
 sudo mv proxiport-pairing /usr/local/bin/
 sudo mkdir -p /etc/proxiport
 sudo mv proxiport-pairing.conf.example /etc/proxiport/proxiport-pairing.conf

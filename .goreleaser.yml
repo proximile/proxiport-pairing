@@ -92,4 +92,4 @@ release:
     owner: proximile
     name: proxiport-pairing
   draft: false
-  prerelease: true
+  prerelease: false

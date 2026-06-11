@@ -9,8 +9,6 @@ Param(
     [Switch]$d,
 # Show a help message
     [Switch]$h,
-# Install or update tacoscript
-    [Switch]$m,
 # Force update
     [Switch]$f,
 # Install a specific version

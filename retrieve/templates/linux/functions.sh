@@ -257,38 +257,6 @@ is_terminal() {
   fi
 }
 
-update_tacoscript() {
-  TACO_VERSION=$(/usr/local/bin/tacoscript --version | grep -o "Version:.*" | awk '{print $2}')
-  cd /tmp
-  test -e tacoscript.tar.gz && rm -f tacoscript.tar.gz
-  curl -LSso tacoscript.tar.gz "https://github.com/proximile/proxiport/releases/latest"
-  if tar xzf tacoscript.tar.gz 2>/dev/null; then
-    echo ""
-    throw_info "Updating Tacoscript from ${TACO_VERSION} to latest ${RELEASE} $(./tacoscript --version | grep -o "Version:.*")"
-    mv -f /tmp/tacoscript /usr/local/bin/tacoscript
-  else
-    throw_info "Nothing to do. Tacoscript is on the latest version ${TACO_VERSION}."
-  fi
-}
-
-#---  FUNCTION  -------------------------------------------------------------------------------------------------------
-#          NAME:  install_tacoscript
-#   DESCRIPTION:  install Tacoscript on Linux
-#----------------------------------------------------------------------------------------------------------------------
-install_tacoscript() {
-  if [ -e /usr/local/bin/tacoscript ]; then
-    throw_info "Tacoscript already installed. Checking for updates ..."
-    update_tacoscript
-    return 0
-  fi
-  cd /tmp
-  test -e tacoscript.tar.gz && rm -f tacoscript.tar.gz
-  curl -Ls "https://github.com/proximile/proxiport/releases/latest" -o tacoscript.tar.gz
-  tar xvzf tacoscript.tar.gz -C /usr/local/bin/ tacoscript
-  rm -f tacoscript.tar.gz
-  echo "Tacoscript installed $(/usr/local/bin/tacoscript --version)"
-}
-
 version_to_int() {
   echo "$1" |
     awk -v 'maxsections=3' -F'.' 'NF < maxsections {printf("%s",$0);for(i=NF;i<maxsections;i++)printf("%s",".0");printf("\n")} NF >= maxsections {print}' |
@@ -672,4 +640,47 @@ abort_on_proxiport_subprocess() {
         throw_hint '  nohup sh -c "curl -s https://pairing.proxiport.net/update|sh" >/tmp/proxiport-update.log 2>&1 &'
         throw_fatal "You cannot update proxiport from an proxiport subprocess."
     fi
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  goreleaser_arch
+#   DESCRIPTION:  Translate `uname -m` to the arch label goreleaser
+#                 uses in proximile/proxiport release asset names.
+#                 Map mirrors .goreleaser.yml's archive name_template.
+#----------------------------------------------------------------------------------------------------------------------
+goreleaser_arch() {
+  m=$(uname -m)
+  case "$m" in
+    x86_64|amd64) echo "x86_64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    armv7l|armv7) echo "armv7" ;;
+    armv6l|armv6) echo "armv6" ;;
+    i686|i386) echo "i386" ;;
+    s390x) echo "s390x" ;;
+    mips64le) echo "mips64le_hardfloat" ;;
+    mips64) echo "mips64_hardfloat" ;;
+    mipsle) echo "mipsle_hardfloat" ;;
+    mips) echo "mips_hardfloat" ;;
+    *) echo "$m" ;; # last-ditch passthrough; will 404 if unsupported
+  esac
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  latest_release_tag
+#   DESCRIPTION:  Resolve the latest release tag (e.g. "v0.1.0") of
+#                 proximile/proxiport via the GitHub API. Falls back
+#                 to following the /releases/latest redirect if the
+#                 API call fails (rate-limited unauthenticated).
+#----------------------------------------------------------------------------------------------------------------------
+latest_release_tag() {
+  TAG=$(curl -fsS "https://api.github.com/repos/proximile/proxiport/releases/latest" 2>/dev/null \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+  if [ -z "$TAG" ]; then
+    TAG=$(curl -sIL "https://github.com/proximile/proxiport/releases/latest" \
+          | sed -n 's@^location: *.*/tag/\([^/[:space:]]*\).*@\1@Ip' | tail -1)
+  fi
+  if [ -z "$TAG" ]; then
+    abort "Could not determine the latest proximile/proxiport release tag."
+  fi
+  echo "$TAG"
 }

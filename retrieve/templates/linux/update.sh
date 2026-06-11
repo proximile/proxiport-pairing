@@ -1,28 +1,29 @@
 set -e
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  download_new_version
+#   DESCRIPTION:  Download the client tarball for $TAG/$TARGET_VERSION
+#                 (resolved in update()) and unpack the binary to a
+#                 temp folder. Prints the path of the new binary.
+#----------------------------------------------------------------------------------------------------------------------
 download_new_version() {
     TEMP=$(mktemp -d)
-    URL="https://github.com/proximile/proxiport/releases/latest/download/proxiport_Linux_${ARCH}.tar.gz"
-    curl -Ls "${URL}" -o "${TEMP}/proxiport.tar.gz"
+    URL="https://github.com/proximile/proxiport/releases/download/${TAG}/proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).tar.gz"
+    curl -fLs "${URL}" -o "${TEMP}/proxiport.tar.gz"
     tar xzf "$TEMP/proxiport.tar.gz" -C "$TEMP" proxiport
     rm -f "$TEMP/proxiport.tar.gz"
     echo "$TEMP/proxiport"
 }
 
-CURRENT_VERSION=$(/usr/local/bin/proxiport --version | awk '{print $2}')
-download_package() {
-  if [ "$VERSION" != "undef" ]; then
-    RELEASE=custom
-    URL="https://github.com/proximile/proxiport/releases/download/${VERSION}/proxiport_${VERSION}_Linux_${ARCH}.tar.gz"
-    if curl -fI "$URL" >/dev/null 2>&1; then
-      true
-    else
-      echo 1>&2 "Version $VERSION does not exist on $URL"
-      exit 1
-    fi
-  else
-    URL="https://github.com/proximile/proxiport/releases/latest/download/proxiport_Linux_${ARCH}.tar.gz"
-  fi
-  curl -Ls "${URL}" -o proxiport.tar.gz
+# Is the installed proxiport client managed by dpkg / rpm?
+# Pairing-script installs use the GitHub tarball (binary in
+# /usr/local/bin), but installs from the .deb/.rpm packages must be
+# updated through the package manager or the binaries diverge.
+is_pkg_managed_deb() {
+  is_available dpkg && dpkg -s proxiport >/dev/null 2>&1
+}
+
+is_pkg_managed_rpm() {
+  is_available rpm && rpm -q proxiport >/dev/null 2>&1
 }
 
 current_version() {
@@ -73,37 +74,54 @@ update() {
   check_prerequisites
   cd /tmp
 
-  if is_debian; then
-          abort_on_proxiport_subprocess
-          RESTART_IN="foreground"
-          if [ -n "$PKG_URL" ]; then
-              throw_info "Updating DEB from custom URL. Checking current version skipped."
-              install_from_deb_download
-          else
-              install_via_deb_repo
-          fi
-      elif is_rhel; then
-          abort_on_proxiport_subprocess
-          RESTART_IN="foreground"
-          if [ -n "$PKG_URL" ]; then
-              throw_info "Updating RPM from custom URL. Checking current version skipped."
-              install_from_rpm_download
-          else
-              install_via_rpm_repo
-          fi
-      elif [ -z "$(curl -s "https://api.github.com/repos/proximile/proxiport/releases/latest")" ]; then
+  if [ -n "$PKG_URL" ]; then
+      # Update from a user-supplied package URL (-z). No version check.
+      abort_on_proxiport_subprocess
+      RESTART_IN="foreground"
+      case "$PKG_URL" in
+        *.deb)
+          throw_info "Updating DEB from custom URL. Checking current version skipped."
+          install_from_deb_download
+          ;;
+        *.rpm)
+          throw_info "Updating RPM from custom URL. Checking current version skipped."
+          install_from_rpm_download
+          ;;
+        *)
+          throw_fatal "Custom package URLs (-z) must point to a .deb or .rpm file."
+          ;;
+      esac
+      TARGET_VERSION=$(current_version)
+  else
+      # ProxiPort does not publish apt/yum repositories. All updates
+      # come from GitHub release assets, matching the install script.
+      TAG=$(latest_release_tag)
+      TARGET_VERSION=${TAG#v}
+      if [ "$CURRENT_VERSION" = "$TARGET_VERSION" ]; then
           throw_info "Nothing to do. ProxiPort is on the latest version ${CURRENT_VERSION}."
-          [ "$ENABLE_TACOSCRIPT" -eq 1 ] && install_tacoscript
           exit 0
+      fi
+      if is_pkg_managed_deb; then
+          abort_on_proxiport_subprocess
+          RESTART_IN="foreground"
+          PKG_URL="https://github.com/proximile/proxiport/releases/download/${TAG}/proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).deb"
+          throw_info "Updating from ${CURRENT_VERSION} to ${TARGET_VERSION} via DEB package."
+          install_from_deb_download
+      elif is_pkg_managed_rpm; then
+          abort_on_proxiport_subprocess
+          RESTART_IN="foreground"
+          PKG_URL="https://github.com/proximile/proxiport/releases/download/${TAG}/proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).rpm"
+          throw_info "Updating from ${CURRENT_VERSION} to ${TARGET_VERSION} via RPM package."
+          install_from_rpm_download
       else
-          # Install from tar.gz
+          # Install from tar.gz (how the pairing installer installs)
           NEW_VERSION=$(download_new_version)
-          TARGET_VERSION=$(${NEW_VERSION} --version | awk '{print $2}')
-          throw_info "Updating from ${CURRENT_VERSION} to latest ${RELEASE} ${TARGET_VERSION}"
+          throw_info "Updating from ${CURRENT_VERSION} to ${TARGET_VERSION}"
           mv "$NEW_VERSION" /usr/local/bin/proxiport
           rm -rf "$(dirname "$NEW_VERSION")"
           RESTART_IN="background"
       fi
+  fi
   check_scripts
   check_sudo
   create_sudoers_updates
@@ -113,7 +131,6 @@ update() {
   enable_file_reception
   insert_watchdog
 
-  [ "$ENABLE_TACOSCRIPT" -eq 1 ] && install_tacoscript
   throw_info "You are now running $(proxiport --version)"
 
   restart_proxiport $RESTART_IN
@@ -338,7 +355,7 @@ Try the following to investigate:
 
 2) tail /var/log/proxiport/proxiport.log
 
-3) Ask for help on https://docs.proxiport.net/need-help/request-support
+3) Ask for help on https://github.com/proximile/proxiport/issues
 "
   if runs_with_selinux; then
     echo "
@@ -358,16 +375,12 @@ Update the current version of ProxiPort to the latest version.
 
 Options:
 -h  print this help message
--v [version] update to the specified version.
 -c  update the proxiport client, default action
--t  use the latest unstable version (DANGEROUS!)
 -u  uninstall the proxiport client and all configurations and logs
 -x  enable script execution in proxiport.conf
 -d  disable script execution in proxiport.conf
 -s  create sudo rules to grant full root access to the proxiport user
--m  do not install or update tacoscript
--p  Do not use the RPM/DEB repository. Forces tar.gz installation.
--z  Download the proxiport client tar.gz|deb|rpm from the given URL instead of using GitHub releases.
+-z  Download the proxiport client deb|rpm from the given URL instead of using GitHub releases.
     See environment variables.
 EOF
   exit 0
@@ -377,15 +390,11 @@ EOF
 # Read the command line options and map to a function call
 #
 ACTION=update
-ENABLE_TACOSCRIPT=1
 ENABLE_SUDO=2
-RELEASE=stable
 ENABLE_SCRIPTS=undef
-VERSION=undef
 ENABLE_FILEREC=0
 ENABLE_FILEREC_SUDO=0
-NO_REPO=0
-while getopts "phcuxdsmrbtz:" opt; do
+while getopts "hcuxdsrbz:" opt; do
   case "${opt}" in
 
   h) ACTION=help ;;
@@ -394,11 +403,8 @@ while getopts "phcuxdsmrbtz:" opt; do
   x) ENABLE_SCRIPTS=true ;;
   d) ENABLE_SCRIPTS=false ;;
   s) ENABLE_SUDO=1 ;;
-  t) RELEASE=unstable ;;
-  m) ENABLE_TACOSCRIPT=0 ;;
   r) export ENABLE_FILEREC=1 ;;
   b) export ENABLE_FILEREC_SUDO=1 ;;
-  p) NO_REPO=1 ;;
   z) export PKG_URL="${OPTARG}" ;;
 
   \?)

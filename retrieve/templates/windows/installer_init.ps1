@@ -14,9 +14,6 @@
         .PARAMETER t
         Use the latest unstable development release. Dangerous!
 
-        .PARAMETER i
-        Install Tascoscript along with the ProxiPort Client
-
         .PARAMETER r
         Enable file recption
 
@@ -48,7 +45,6 @@
 Param(
     [Alias("EnableCommands")][switch]$x, # Enable remote commands yes/no
     [switch]$t, # Use unstable version yes/no
-    [switch]$i, # Install tacoscript
     [switch]$r, # Enable file reception
     [string]$g, # Add a tag
     [switch]$d, # Exit after writing the config

@@ -8,7 +8,6 @@ Parameters:
 -x  Enable command and script execution without asking for confirmation.
 -d  Disable command and script execution.
 -v [version] Upgrade to the specified version.
--m  do not install or update tacoscript
 -f  force update without comparing versions
 -r  activate file reception
 "
@@ -61,11 +60,6 @@ If ((Get-Item $downloadFile).length -eq 0)
 {
     Write-Output "* No ProxiPort update needed. You are on the latest $currentVersion version."
     Remove-Item $downloadFile
-    # Install or update tacoscript
-    if ($m -eq $false)
-    {
-        Install-Tacoscript
-    }
     Set-Location $myLocation
     exit 0
 }
@@ -315,12 +309,6 @@ function Invoke-Later
     Register-ScheduledTask $taskName -InputObject $task
     Write-Output "* Task `"$( $Description )`" [$( $taskFile )] scheduled."
     Write-Output "  It will be executed within $( $Delay ) seconds."
-}
-
-# Install or update tacoscript
-if ($m -eq $false)
-{
-    Install-Tacoscript
 }
 
 # Add new features

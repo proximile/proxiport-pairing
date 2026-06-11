@@ -178,18 +178,6 @@ else
 Start-Service -Name proxiport
 Get-Service proxiport
 
-if ($i)
-{
-    try
-    {
-        Install-Tacoscript
-    }
-    catch
-    {
-        Write-Output ": Installation of Tacoscript failed"
-        Write-Output $_
-    }
-}
 # Clean Up
 Remove-Item $downloadFile
 if ($msiLog -And (Test-Path $msiLog))
@@ -247,7 +235,7 @@ Try the following to investigate:
 
 3) READ THE DOCS on https://docs.proxiport.net
 
-4) Request support on https://github.com/proximile/proxiport-pairing/discussions/categories/help-needed
+4) Request support on https://github.com/proximile/proxiport/issues
 "
 }
 
