@@ -495,7 +495,7 @@ finish() {
 #
 #  Installation of proxiport finished.
 #
-#  This client is now connected to $SERVER
+#  This client is now connected to $CONNECT_URL
 #
 #  Look at $CONFIG_FILE and explore all options.
 #  Logs are written to /var/log/proxiport/proxiport.log.
@@ -547,9 +547,9 @@ Try the following to investigate:
 #
 check_prerequisites
 
-MANDATORY="SERVER FINGERPRINT CLIENT_ID PASSWORD"
+MANDATORY="CONNECT_URL FINGERPRINT CLIENT_ID PASSWORD"
 for VAR in $MANDATORY; do
-  if eval "[ -z $${VAR} ]"; then
+  if eval "[ -z \"\$${VAR}\" ]"; then
     abort "Variable \$${VAR} not set."
   fi
 done
