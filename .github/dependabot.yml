@@ -1,0 +1,26 @@
+# Keep the Go module and the GitHub Actions used by CI current. Patch and
+# minor bumps are auto-merged once the required checks pass (see
+# dependabot-auto-merge.yml); majors stay manual.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch
