@@ -18,7 +18,7 @@ jobs:
         # v6 + "latest" resolves to the golangci-lint v1 series, which is
         # built with Go 1.24 and refuses go.mod >= 1.25. Pin the same
         # action + version the main proxiport repo uses.
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           args: --timeout=5m
