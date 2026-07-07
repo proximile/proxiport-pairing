@@ -18,3 +18,11 @@ jobs:
 
       - name: Go Test
         run: go test -race ./...
+
+      # Known-vulnerability scan of the module (deps + the Go stdlib version).
+      # govulncheck is call-graph aware, so it only fails on vulns actually
+      # reachable from our code. @latest tracks the newest scanner + Go vuln DB.
+      # A newly-disclosed reachable vuln can turn main red with no code change —
+      # intended; move to a scheduled run if it ever proves disruptive.
+      - name: govulncheck (dependency vulnerability scan)
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
