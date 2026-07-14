@@ -85,7 +85,6 @@ uninstall() {
     /etc/systemd/system/proxiport.service
     /etc/sudoers.d/proxiport-update-status
     /etc/sudoers.d/proxiport-all-cmd
-    /usr/local/bin/tacoscript
     /etc/init.d/proxiport
     /var/run/proxiport.pid
     /etc/runlevels/default/proxiport
