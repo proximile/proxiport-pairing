@@ -65,7 +65,42 @@ download_and_extract() {
   if [ ! -s proxiport.tar.gz ]; then
     abort "Downloaded asset is empty: ${URL}"
   fi
+  verify_checksum "proxiport.tar.gz" "${ASSET}" "${TAG}"
   tar xzf proxiport.tar.gz
+}
+
+# verify_checksum <local-file> <asset-name> <tag>
+# Fetches the release's checksums.txt and confirms the downloaded asset's
+# SHA-256 matches the published one, aborting if the file was tampered with in
+# transit or at the origin. checksums.txt is produced by the release pipeline
+# (goreleaser) for every release.
+verify_checksum() {
+  _file="$1"; _asset="$2"; _tag="$3"
+  _sumsurl="https://github.com/proximile/proxiport/releases/download/${_tag}/checksums.txt"
+  echo "Verifying checksum against ${_sumsurl}"
+  if is_available curl; then
+    curl -fLSs "${_sumsurl}" -o checksums.txt || abort "Could not download checksums.txt — refusing to install an unverified binary."
+  else
+    wget -q "${_sumsurl}" -O checksums.txt || abort "Could not download checksums.txt — refusing to install an unverified binary."
+  fi
+
+  _expected=$(grep " ${_asset}\$" checksums.txt | awk '{print $1}')
+  if [ -z "${_expected}" ]; then
+    abort "No checksum listed for ${_asset} — refusing to install an unverified binary."
+  fi
+
+  if is_available sha256sum; then
+    _actual=$(sha256sum "${_file}" | awk '{print $1}')
+  elif is_available shasum; then
+    _actual=$(shasum -a 256 "${_file}" | awk '{print $1}')
+  else
+    abort "No sha256 tool (sha256sum/shasum) found — cannot verify the download."
+  fi
+
+  if [ "${_expected}" != "${_actual}" ]; then
+    abort "Checksum mismatch for ${_asset}: expected ${_expected}, got ${_actual}. The download may have been tampered with; not installing."
+  fi
+  echo "Checksum OK (${_actual})"
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------

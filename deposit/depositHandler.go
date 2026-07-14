@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/iancoleman/strcase"
@@ -73,8 +74,24 @@ func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// hasControl reports whether s contains any control character (newline, CR,
+// NUL, ...). Such characters are the vector for multi-line injection into the
+// shell/sed the installer builds and never appear in a real credential, URL, or
+// fingerprint.
+func hasControl(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateInput(deposit *Deposit) (bool, error) {
 	validate = validator.New()
+	_ = validate.RegisterValidation("nocontrol", func(fl validator.FieldLevel) bool {
+		return !hasControl(fl.Field().String())
+	})
 	err := validate.Struct(deposit)
 	if err == nil {
 		return true, nil
