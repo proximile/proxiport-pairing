@@ -18,7 +18,7 @@ import (
 // bash still runs command substitution for backticks and $(...) — both must be
 // escaped, not just $.
 func TestSanitizeForBashNeutralizesCommandSubstitution(t *testing.T) {
-	in := deposit.Deposit{
+	in := deposit.Deposit{ //nolint:gosec // G101: static fixture exercising the sanitizer, not a real credential
 		ClientId: "id`whoami`",
 		Password: `p$(id)a"b\c`,
 	}
