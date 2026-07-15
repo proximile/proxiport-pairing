@@ -69,11 +69,44 @@ download_and_extract() {
   tar xzf proxiport.tar.gz
 }
 
+# verify_signature <tag>
+# Best-effort Sigstore verification of checksums.txt. When cosign is present it
+# verifies the release's keyless signature over checksums.txt against the pinned
+# signing identity, aborting on failure — this is what defends against a
+# same-channel attacker who can rewrite both the artifact and checksums.txt. When
+# cosign is absent it warns and returns, leaving only the SHA-256 check (which
+# protects against corruption, not a substituted-but-consistent release).
+verify_signature() {
+  _tag="$1"
+  _base="https://github.com/proximile/proxiport/releases/download/${_tag}"
+  if ! is_available cosign; then
+    throw_warning "cosign not found — the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification."
+    return 0
+  fi
+  echo "Verifying release signature with cosign"
+  _sig_dl() {
+    if is_available curl; then curl -fLSs "$1" -o "$2"; else wget -q "$1" -O "$2"; fi
+  }
+  if ! _sig_dl "${_base}/checksums.txt.sig" checksums.txt.sig || ! _sig_dl "${_base}/checksums.txt.pem" checksums.txt.pem; then
+    abort "cosign is installed but the release signature/certificate could not be downloaded — refusing to install."
+  fi
+  if ! cosign verify-blob \
+        --certificate checksums.txt.pem \
+        --signature checksums.txt.sig \
+        --certificate-identity-regexp 'https://github.com/proximile/proxiport' \
+        --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+        checksums.txt >/dev/null 2>&1; then
+    abort "cosign signature verification failed for checksums.txt — refusing to install a possibly-tampered release."
+  fi
+  echo "Signature OK (cosign)"
+}
+
 # verify_checksum <local-file> <asset-name> <tag>
-# Fetches the release's checksums.txt and confirms the downloaded asset's
-# SHA-256 matches the published one, aborting if the file was tampered with in
-# transit or at the origin. checksums.txt is produced by the release pipeline
-# (goreleaser) for every release.
+# Fetches the release's checksums.txt, verifies its signature (see
+# verify_signature), then confirms the downloaded asset's SHA-256 matches the
+# published one, aborting if the file was tampered with in transit or at the
+# origin. checksums.txt is produced by the release pipeline (goreleaser) for
+# every release.
 verify_checksum() {
   _file="$1"; _asset="$2"; _tag="$3"
   _sumsurl="https://github.com/proximile/proxiport/releases/download/${_tag}/checksums.txt"
@@ -83,6 +116,8 @@ verify_checksum() {
   else
     wget -q "${_sumsurl}" -O checksums.txt || abort "Could not download checksums.txt — refusing to install an unverified binary."
   fi
+
+  verify_signature "${_tag}"
 
   _expected=$(grep " ${_asset}\$" checksums.txt | awk '{print $1}')
   if [ -z "${_expected}" ]; then

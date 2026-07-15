@@ -478,6 +478,49 @@ function Get-LatestReleaseTag
 # published checksums.txt, aborting on mismatch. Mirrors the Linux installer's
 # verify_checksum. checksums.txt is produced by the release pipeline
 # (goreleaser) for every release.
+# Best-effort Sigstore verification of checksums.txt. When cosign is present it
+# verifies the release's keyless signature over checksums.txt against the pinned
+# signing identity, throwing on failure — this is what defends against a
+# same-channel attacker who can rewrite both the artifact and checksums.txt. When
+# cosign is absent it warns and returns, leaving only the SHA-256 check.
+function Confirm-ReleaseSignature
+{
+    Param(
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$ChecksumsFile
+    )
+    if (-not (Get-Command cosign -ErrorAction SilentlyContinue))
+    {
+        Write-Warning "cosign not found — the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification."
+        return
+    }
+    Write-Information "* Verifying release signature with cosign"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $base = "https://github.com/proximile/proxiport/releases/download/$( $Tag )"
+    $sigFile = "$( $ChecksumsFile ).sig"
+    $pemFile = "$( $ChecksumsFile ).pem"
+    try
+    {
+        Invoke-WebRequest -UseBasicParsing -Uri "$( $base )/checksums.txt.sig" -OutFile $sigFile
+        Invoke-WebRequest -UseBasicParsing -Uri "$( $base )/checksums.txt.pem" -OutFile $pemFile
+    }
+    catch
+    {
+        throw "cosign is installed but the release signature/certificate could not be downloaded — refusing to install."
+    }
+    & cosign verify-blob `
+        --certificate $pemFile `
+        --signature $sigFile `
+        --certificate-identity-regexp 'https://github.com/proximile/proxiport' `
+        --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' `
+        $ChecksumsFile 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "cosign signature verification failed for checksums.txt — refusing to install a possibly-tampered release."
+    }
+    Write-Information "* Signature OK (cosign)"
+}
+
 function Confirm-ReleaseChecksum
 {
     Param(
@@ -488,17 +531,22 @@ function Confirm-ReleaseChecksum
     $sumsUrl = "https://github.com/proximile/proxiport/releases/download/$( $Tag )/checksums.txt"
     Write-Information "* Verifying checksum against $( $sumsUrl )"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    # Download to a file (rather than into memory) so cosign can verify the exact
+    # signed bytes.
+    $sumsFile = Join-Path $Env:TEMP "proxiport-checksums.txt"
     try
     {
-        $sums = (Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl).Content
+        Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -OutFile $sumsFile
     }
     catch
     {
         throw "Could not download checksums.txt — refusing to install an unverified binary."
     }
 
+    Confirm-ReleaseSignature -Tag $Tag -ChecksumsFile $sumsFile
+
     $expected = $null
-    foreach ($line in ($sums -split "`n"))
+    foreach ($line in (Get-Content $sumsFile))
     {
         # checksums.txt lines are "<sha256>  <filename>"
         $parts = ($line.Trim() -split '\s+', 2)
