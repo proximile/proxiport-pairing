@@ -68,6 +68,23 @@ is_available() {
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  sed_rescape
+#   DESCRIPTION:  Read a raw string on stdin and emit it escaped so it is safe
+#                 to splice into the REPLACEMENT half of a `sed 's/PAT/REPL/'`
+#                 command that uses '/' as its delimiter. Backslash, ampersand
+#                 and the '/' delimiter are the only characters with special
+#                 meaning there, so all three are escaped. The value is only
+#                 ever sed's stdin (data), never part of the sed program, so it
+#                 cannot close the s-command and inject a further command such
+#                 as GNU sed's `e` -- which this installer, running as root,
+#                 would otherwise execute. Escape backslashes first so the
+#                 backslashes added for '&' and '/' are not themselves doubled.
+#----------------------------------------------------------------------------------------------------------------------
+sed_rescape() {
+  sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/\//\\\//g'
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  uninstall
 #   DESCRIPTION:  Uninstall everything and remove the user
 #----------------------------------------------------------------------------------------------------------------------

@@ -254,9 +254,17 @@ EOF
 #----------------------------------------------------------------------------------------------------------------------
 prepare_config() {
   echo "Preparing $CONFIG_FILE"
-  sed -i "s|#*server = .*|server = \"${CONNECT_URL}\"|g" "$CONFIG_FILE"
-  sed -i "s/#*auth = .*/auth = \"${CLIENT_ID}:${PASSWORD}\"/g" "$CONFIG_FILE"
-  sed -i "s/#*fingerprint = .*/fingerprint = \"${FINGERPRINT}\"/g" "$CONFIG_FILE"
+  # These four values come from the (untrusted) deposit and are spliced into
+  # sed replacements below. Escape them for the sed replacement context first
+  # (see sed_rescape) so a crafted URL/id/password/fingerprint cannot break out
+  # of the s-command into a further, root-executed sed command.
+  _server_esc=$(printf '%s' "${CONNECT_URL}" | sed_rescape)
+  _client_id_esc=$(printf '%s' "${CLIENT_ID}" | sed_rescape)
+  _password_esc=$(printf '%s' "${PASSWORD}" | sed_rescape)
+  _fingerprint_esc=$(printf '%s' "${FINGERPRINT}" | sed_rescape)
+  sed -i "s/#*server = .*/server = \"${_server_esc}\"/g" "$CONFIG_FILE"
+  sed -i "s/#*auth = .*/auth = \"${_client_id_esc}:${_password_esc}\"/g" "$CONFIG_FILE"
+  sed -i "s/#*fingerprint = .*/fingerprint = \"${_fingerprint_esc}\"/g" "$CONFIG_FILE"
   sed -i "s/#*log_file = .*C.*Program Files.*/""/g" "$CONFIG_FILE"
   sed -i "s/#*log_file = /log_file = /g" "$CONFIG_FILE"
   sed -i "s|#updates_interval = '4h'|updates_interval = '4h'|g" "$CONFIG_FILE"
