@@ -5,6 +5,11 @@
   ## External URL the pairing service is reachable at (used to build
   ## the pre-rendered installer one-liners returned by POST /).
   url = "https://pairing.proxiport.net"
+  ## Single origin allowed to make cross-origin (browser) requests to the
+  ## deposit/retrieve endpoints. Empty by default (no CORS) — these endpoints
+  ## are normally called by provisioning tooling, not a browser. Set to a
+  ## specific origin if you front them with a web app. Never use "*".
+  #cors_allow_origin = "https://app.example.com"
 
 [static-deposit]
   ## A static pairing code that bypasses the cache. Useful for

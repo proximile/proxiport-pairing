@@ -26,6 +26,10 @@ const maxBodyBytes = 64 << 10                                                  /
 type Handler struct {
 	Cache     *cache.Cache
 	ServerUrl string
+	// AllowOrigin, when set, is echoed as Access-Control-Allow-Origin. Empty by
+	// default: the deposit endpoint is not a browser-origin surface, so no
+	// wildcard CORS is emitted.
+	AllowOrigin string
 }
 
 func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
@@ -66,7 +70,9 @@ func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	if jresponse, err := json.Marshal(response); err != nil {
 		log.Println("Json error: ", err)
 	} else {
-		rw.Header().Set("Access-Control-Allow-Origin", "*")
+		if dh.AllowOrigin != "" {
+			rw.Header().Set("Access-Control-Allow-Origin", dh.AllowOrigin)
+		}
 		rw.Header().Set("Content-Type", "application/json")
 		if _, err := rw.Write(jresponse); err != nil {
 			log.Println("Error ", err)
