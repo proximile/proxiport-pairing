@@ -14,6 +14,10 @@ type Config struct {
 	Server struct {
 		Address string `mapstructure:"address"`
 		Url     string `mapstructure:"url"`
+		// CorsAllowOrigin, when set, is the single origin allowed to make
+		// cross-origin requests to the deposit/retrieve endpoints. Empty by
+		// default (no CORS). Never set this to "*".
+		CorsAllowOrigin string `mapstructure:"cors_allow_origin"`
 	} `mapstructure:"server"`
 	StaticDeposit deposit.Deposit `mapstructure:"static-deposit"`
 }

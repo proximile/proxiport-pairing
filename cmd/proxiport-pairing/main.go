@@ -14,6 +14,7 @@ import (
 	"github.com/proximile/proxiport-pairing/deposit"
 	"github.com/proximile/proxiport-pairing/internal/cache"
 	"github.com/proximile/proxiport-pairing/internal/config"
+	"github.com/proximile/proxiport-pairing/internal/ratelimit"
 	"github.com/proximile/proxiport-pairing/retrieve"
 )
 
@@ -33,8 +34,9 @@ func main() {
 	c := cache.New()
 
 	depositHandler := &deposit.Handler{
-		Cache:     c,
-		ServerUrl: cfg.Server.Url,
+		Cache:       c,
+		ServerUrl:   cfg.Server.Url,
+		AllowOrigin: cfg.Server.CorsAllowOrigin,
 	}
 	installerHandler := &retrieve.InstallerHandler{
 		StaticDeposit: cfg.StaticDeposit,
@@ -43,13 +45,19 @@ func main() {
 	updateHandler := &retrieve.UpdateHandler{
 		StaticDeposit: cfg.StaticDeposit,
 	}
-	corsHandler := &cors.Handler{}
+	corsHandler := &cors.Handler{AllowOrigin: cfg.Server.CorsAllowOrigin}
+
+	// Per-IP rate limits for the unauthenticated endpoints. Deposit creates a
+	// pairing code, so it is stricter; installer/update retrieval is looser to
+	// tolerate legitimate re-fetches. Both are process-local and best-effort.
+	depositLimiter := ratelimit.New(1, 10)  // ~1/sec sustained, burst 10
+	retrieveLimiter := ratelimit.New(2, 30) // ~2/sec sustained, burst 30
 
 	r := mux.NewRouter()
 	r.PathPrefix("/").Methods("OPTIONS").Handler(corsHandler)
-	r.Path("/").Methods("POST").Handler(depositHandler)
-	r.Path("/update").Methods("GET").Handler(updateHandler)
-	r.Path("/{pairingCode:[0-9 a-z A-Z]{7}}").Methods("GET").Handler(installerHandler)
+	r.Path("/").Methods("POST").Handler(depositLimiter.Middleware(depositHandler))
+	r.Path("/update").Methods("GET").Handler(retrieveLimiter.Middleware(updateHandler))
+	r.Path("/{pairingCode:[0-9 a-z A-Z]{7}}").Methods("GET").Handler(retrieveLimiter.Middleware(installerHandler))
 
 	log.Println("proxiport-pairing", Version, "listening on", cfg.Server.Address)
 	srv := &http.Server{
