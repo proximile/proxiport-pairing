@@ -87,3 +87,47 @@ func TestInstallerHandler_ServeHTTP(t *testing.T) {
 		})
 	}
 }
+
+// TestInstallerHandler_SedInjectionGuard is a regression guard for the
+// unauthenticated-deposit -> root-RCE class of bug. The four deposit fields are
+// spliced into `sed -i` replacements the (root) Linux installer runs; if they
+// reach sed raw, a value like `x/g;e <cmd>;#` breaks out of the s-command into
+// GNU sed's `e`, which runs as root. The installer must therefore route every
+// deposit value through sed_rescape before the sed calls. This test fails if
+// anyone reverts prepare_config to raw interpolation.
+func TestInstallerHandler_SedInjectionGuard(t *testing.T) {
+	c := cache.New()
+	demoDeposit := deposit.Deposit{
+		ConnectUrl:  "https://proxiport.example.com",
+		Fingerprint: "2a:c1:71:09:80:ba:7c:10:05:e5:2c:99:6d:15:56:24",
+		ClientId:    "client1",
+		Password:    "foobaz",
+		Code:        "cZ1ZhsG",
+	}
+	installerHandler := &retrieve.InstallerHandler{StaticDeposit: demoDeposit, Cache: c}
+
+	request, _ := http.NewRequest(http.MethodGet, "/cZ1ZhsG", nil)
+	request.Header.Set("User-Agent", "curl/7.79.1")
+	request = mux.SetURLVars(request, map[string]string{"pairingCode": "cZ1ZhsG"})
+	recorder := httptest.NewRecorder()
+	installerHandler.ServeHTTP(recorder, request)
+	body := recorder.Body.String()
+
+	// The escaping helper must be present.
+	assert.Contains(t, body, "sed_rescape()", "sed_rescape helper missing from installer")
+
+	// Each deposit value must be escaped before use in the sed replacements.
+	for _, v := range []string{"CONNECT_URL", "CLIENT_ID", "PASSWORD", "FINGERPRINT"} {
+		assert.Contains(t, body, "${"+v+"}\" | sed_rescape)",
+			"deposit value "+v+" is not routed through sed_rescape before sed")
+	}
+
+	// The raw, injectable interpolation forms must be gone.
+	for _, raw := range []string{
+		`auth = \"${CLIENT_ID}:${PASSWORD}\"`,
+		`fingerprint = \"${FINGERPRINT}\"`,
+		`server = \"${CONNECT_URL}\"`,
+	} {
+		assert.NotContains(t, body, raw, "raw un-escaped deposit interpolation still present in installer sed")
+	}
+}
