@@ -7,8 +7,20 @@ set -e
 #----------------------------------------------------------------------------------------------------------------------
 download_new_version() {
     TEMP=$(mktemp -d)
-    URL="https://github.com/proximile/proxiport/releases/download/${TAG}/proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).tar.gz"
+    ASSET="proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).tar.gz"
+    URL="https://github.com/proximile/proxiport/releases/download/${TAG}/${ASSET}"
     curl -fLs "${URL}" -o "${TEMP}/proxiport.tar.gz"
+
+    # Verify the download against the release's published SHA-256 before using it.
+    curl -fLs "https://github.com/proximile/proxiport/releases/download/${TAG}/checksums.txt" -o "${TEMP}/checksums.txt" \
+      || { echo "could not fetch checksums.txt; refusing to update" >&2; exit 1; }
+    EXPECTED=$(grep " ${ASSET}\$" "${TEMP}/checksums.txt" | awk '{print $1}')
+    ACTUAL=$(sha256sum "${TEMP}/proxiport.tar.gz" | awk '{print $1}')
+    if [ -z "${EXPECTED}" ] || [ "${EXPECTED}" != "${ACTUAL}" ]; then
+        echo "checksum mismatch for ${ASSET} (expected '${EXPECTED}', got '${ACTUAL}'); refusing to update" >&2
+        exit 1
+    fi
+
     tar xzf "$TEMP/proxiport.tar.gz" -C "$TEMP" proxiport
     rm -f "$TEMP/proxiport.tar.gz"
     echo "$TEMP/proxiport"

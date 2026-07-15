@@ -6,11 +6,17 @@ import (
 )
 
 type Deposit struct {
-	Code        string `mapstructure:"code"`
-	ConnectUrl  string `validate:"required,url" json:"connect_url" mapstructure:"connect_url"`
-	Fingerprint string `validate:"required,len=47" json:"fingerprint" mapstructure:"fingerprint"`
-	ClientId    string `validate:"required" json:"client_id" mapstructure:"client_id"`
-	Password    string `validate:"required" json:"password" mapstructure:"password"`
+	Code string `mapstructure:"code"`
+	// Every field below is interpolated into the generated installer script, so
+	// each carries `nocontrol`: no control characters (newlines, CR, NUL, ...),
+	// which have no legitimate place in a URL / fingerprint / credential and are
+	// the vector for multi-line injection into the shell and sed the installer
+	// builds. Shell metacharacters within a single line are additionally
+	// neutralized by SanitizeForBash / SanitizeForPowerShell.
+	ConnectUrl  string `validate:"required,url,nocontrol" json:"connect_url" mapstructure:"connect_url"`
+	Fingerprint string `validate:"required,nocontrol" json:"fingerprint" mapstructure:"fingerprint"`
+	ClientId    string `validate:"required,nocontrol" json:"client_id" mapstructure:"client_id"`
+	Password    string `validate:"required,nocontrol" json:"password" mapstructure:"password"`
 }
 
 type Response struct {
@@ -24,10 +30,14 @@ type Response struct {
 
 func rplForBash(in string) (out string) {
 	// Order matters: the backslash must be escaped FIRST, otherwise the
-	// backslash inserted while escaping `"` or `$` would itself get doubled.
-	// Go's map iteration is unordered, so this list is an explicit slice.
+	// backslash inserted while escaping the other metacharacters would itself
+	// get doubled. Go's map iteration is unordered, so this list is an explicit
+	// slice. The value is interpolated inside a double-quoted assignment, where
+	// bash still performs command substitution for backticks and $(...) and
+	// parameter expansion for $ — all three must be neutralized, not just $.
 	rpl := [][2]string{
 		{"\\", "\\\\"},
+		{"`", "\\`"},
 		{"\"", "\\\""},
 		{"$", "\\$"},
 	}
