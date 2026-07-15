@@ -474,6 +474,53 @@ function Get-LatestReleaseTag
     return $tag
 }
 
+# Verify the SHA-256 of a downloaded release asset against the release's
+# published checksums.txt, aborting on mismatch. Mirrors the Linux installer's
+# verify_checksum. checksums.txt is produced by the release pipeline
+# (goreleaser) for every release.
+function Confirm-ReleaseChecksum
+{
+    Param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$AssetName,
+        [Parameter(Mandatory = $true)][string]$Tag
+    )
+    $sumsUrl = "https://github.com/proximile/proxiport/releases/download/$( $Tag )/checksums.txt"
+    Write-Information "* Verifying checksum against $( $sumsUrl )"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    try
+    {
+        $sums = (Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl).Content
+    }
+    catch
+    {
+        throw "Could not download checksums.txt — refusing to install an unverified binary."
+    }
+
+    $expected = $null
+    foreach ($line in ($sums -split "`n"))
+    {
+        # checksums.txt lines are "<sha256>  <filename>"
+        $parts = ($line.Trim() -split '\s+', 2)
+        if ($parts.Count -eq 2 -and $parts[1].Trim() -eq $AssetName)
+        {
+            $expected = $parts[0].Trim().ToLower()
+            break
+        }
+    }
+    if (-not $expected)
+    {
+        throw "No checksum listed for $( $AssetName ) — refusing to install an unverified binary."
+    }
+
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $FilePath).Hash.ToLower()
+    if ($expected -ne $actual)
+    {
+        throw "Checksum mismatch for $( $AssetName ): expected $expected, got $actual. The download may have been tampered with; not installing."
+    }
+    Write-Information "* Checksum OK ($actual)"
+}
+
 function Invoke-Download
 {
     Param(
@@ -482,6 +529,11 @@ function Invoke-Download
         [string]$pkgUrl
     )
     $Headers = @{ }
+    # Set for the GitHub-release download path so the download can be checksum-
+    # verified below. Left empty for a custom $pkgUrl (no published checksums),
+    # matching the Linux installer, which also only verifies release downloads.
+    $assetName = $null
+    $releaseTag = $null
     if ($pkgUrl)
     {
         # Download from a custom URL given by global switch
@@ -519,8 +571,10 @@ function Invoke-Download
             New-Item -ItemType File -Force -Path $downloadFile | Out-Null
             return $downloadFile
         }
-        $downloadFile = "C:\Windows\temp\proxiport_$( $version )_windows_x86_64.zip"
-        $url = "https://github.com/proximile/proxiport/releases/download/$( $tag )/proxiport_$( $version )_windows_x86_64.zip"
+        $assetName = "proxiport_$( $version )_windows_x86_64.zip"
+        $downloadFile = "C:\Windows\temp\$( $assetName )"
+        $url = "https://github.com/proximile/proxiport/releases/download/$( $tag )/$( $assetName )"
+        $releaseTag = $tag
     }
 
     if (Test-Path $downloadFile -PathType leaf)
@@ -531,6 +585,11 @@ function Invoke-Download
     $ProgressPreference = 'SilentlyContinue'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $downloadFile -Headers $Headers
+    if ($releaseTag -and $assetName)
+    {
+        # Verify the release download before any caller extracts/runs it.
+        Confirm-ReleaseChecksum -FilePath $downloadFile -AssetName $assetName -Tag $releaseTag
+    }
     return $downloadFile
 }
 
