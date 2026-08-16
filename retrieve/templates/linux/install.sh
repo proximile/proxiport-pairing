@@ -289,41 +289,26 @@ EOF
 #----------------------------------------------------------------------------------------------------------------------
 prepare_config() {
   echo "Preparing $CONFIG_FILE"
-  # These four values come from the (untrusted) deposit and are spliced into
-  # sed replacements below. Escape them for the sed replacement context first
-  # (see sed_rescape) so a crafted URL/id/password/fingerprint cannot break out
-  # of the s-command into a further, root-executed sed command.
-  _server_esc=$(printf '%s' "${CONNECT_URL}" | sed_rescape)
-  _client_id_esc=$(printf '%s' "${CLIENT_ID}" | sed_rescape)
-  _password_esc=$(printf '%s' "${PASSWORD}" | sed_rescape)
-  _fingerprint_esc=$(printf '%s' "${FINGERPRINT}" | sed_rescape)
-  # Anchor to a real "<key> =" assignment at the start of the line (after
-  # optional indentation and a single leading '#'), so a substring such as
-  # require_fingerprint is never rewritten, and preserve the indentation (\1).
-  sed -i "s/^\([[:space:]]*\)#\{0,1\}server = .*/\1server = \"${_server_esc}\"/g" "$CONFIG_FILE"
-  sed -i "s/^\([[:space:]]*\)#\{0,1\}auth = .*/\1auth = \"${_client_id_esc}:${_password_esc}\"/g" "$CONFIG_FILE"
-  sed -i "s/^\([[:space:]]*\)#\{0,1\}fingerprint = .*/\1fingerprint = \"${_fingerprint_esc}\"/g" "$CONFIG_FILE"
-  # The example config may ship several commented examples for one key (e.g. a
-  # #fingerprint line each for the SHA-256 and legacy MD5 forms); the sed above
-  # would activate every one, leaving a duplicate key that fails the config
-  # parse ("key fingerprint is already defined"). Keep only the first active
-  # server/auth/fingerprint assignment. This pass reads only already-written
-  # lines, so no untrusted deposit value is re-interpolated here.
-  _dedup_tmp="${CONFIG_FILE}.dedup.$$"
-  awk '
-    /^[[:space:]]*(server|auth|fingerprint) = / { if (seen[$1]++) next }
-    { print }
-  ' "$CONFIG_FILE" > "$_dedup_tmp" && cat "$_dedup_tmp" > "$CONFIG_FILE" && rm -f "$_dedup_tmp"
+  # These four values come from the (untrusted) deposit. set_toml_key (defined in
+  # functions.sh) passes each through the environment into awk -- never spliced
+  # into a shell or sed command -- so no escaping is needed and a crafted value
+  # cannot inject a command. It sets each key idempotently: replace the first
+  # existing (commented or not) occurrence in [client] and drop any duplicate, so
+  # multiple commented examples (e.g. two #fingerprint lines) or a re-install over
+  # an existing config never leave a duplicate key that fails the config parse.
+  set_toml_key client server "\"${CONNECT_URL}\""
+  set_toml_key client auth "\"${CLIENT_ID}:${PASSWORD}\""
+  set_toml_key client fingerprint "\"${FINGERPRINT}\""
   sed -i "s/#*log_file = .*C.*Program Files.*/""/g" "$CONFIG_FILE"
   sed -i "s/#*log_file = /log_file = /g" "$CONFIG_FILE"
   sed -i "s|#updates_interval = '4h'|updates_interval = '4h'|g" "$CONFIG_FILE"
   if [ "$ENABLE_COMMANDS" -eq 1 ]; then
     sed -i "s/#allow = .*/allow = ['.*']/g" "$CONFIG_FILE"
     sed -i "s/#deny = .*/deny = []/g" "$CONFIG_FILE"
-    sed -i '/^\[remote-scripts\]/a \ \ enabled = true' "$CONFIG_FILE"
+    set_toml_key remote-scripts enabled true
     sed -i "s|# script_dir = '/var/lib/proxiport/scripts'|script_dir = '/var/lib/proxiport/scripts'|g" "$CONFIG_FILE"
   else
-    sed -i '/^\[remote-commands\]/a \ \ enabled = false' "$CONFIG_FILE"
+    set_toml_key remote-commands enabled false
   fi
 
   # Set the hostname.
