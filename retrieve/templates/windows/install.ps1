@@ -91,7 +91,20 @@ Write-Output "* Creating new configuration file $( $configFile )."
 $logFile = "$( $installDir )\proxiport.log"
 $configContent = $configContent -replace 'server = .*', "server = `"$( $connect_url )`""
 $configContent = $configContent -replace '.*auth = .*', "  auth = `"$( $client_id ):$( $password )`""
-$configContent = $configContent -replace '#fingerprint = .*', "fingerprint = `"$( $fingerprint )`""
+# Activate only the FIRST fingerprint example. The template ships several
+# commented examples (SHA-256 and legacy MD5 forms); a plain -replace activates
+# every one, producing a duplicate 'fingerprint' key that fails the config
+# parse. Anchor to a real assignment (so require_fingerprint is untouched) and
+# rewrite only the first match.
+$fpSet = $false
+$configContent = foreach ($line in $configContent) {
+    if (-not $fpSet -and $line -match '^\s*#?fingerprint\s*=') {
+        $fpSet = $true
+        '  fingerprint = "{0}"' -f $fingerprint
+    } else {
+        $line
+    }
+}
 $configContent = $configContent -replace 'log_file = .*', "log_file = '$( $logFile )'"
 $configContent = $configContent -replace '#data_dir = .*', "data_dir = '$( $dataDir )'"
 # Set the system UUID
