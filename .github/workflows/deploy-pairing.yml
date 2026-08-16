@@ -45,27 +45,59 @@ jobs:
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download .deb from the release
+      # cosign verifies the keyless Sigstore signature over checksums.txt before
+      # we trust any hash from it.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Download and verify the .deb from the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           mkdir -p stage
           TAG="${{ steps.tag.outputs.tag }}"
           # Strip leading 'v' from tag; release assets use the bare semver.
           VER="${TAG#v}"
           ASSET="proxiport-pairing_${VER}_linux_x86_64.deb"
+
           gh release download "$TAG" \
               --repo "${{ github.repository }}" \
               --pattern "$ASSET" \
+              --pattern "checksums.txt" \
+              --pattern "checksums.txt.sig" \
+              --pattern "checksums.txt.pem" \
               --dir stage/
+
+          # 1) Verify checksums.txt was signed by this repo's release workflow.
+          cosign verify-blob \
+              --certificate stage/checksums.txt.pem \
+              --signature stage/checksums.txt.sig \
+              --certificate-identity-regexp 'https://github.com/${{ github.repository }}' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              stage/checksums.txt
+
+          # 2) Verify the downloaded .deb matches its entry in the signed manifest.
+          ( cd stage && grep " ${ASSET}\$" checksums.txt | sha256sum -c - )
           ls -la stage/
 
       - name: Configure SSH
+        env:
+          # Optional: pin the droplet's SSH host key. When set, trust exactly
+          # this key instead of trust-on-first-use from ssh-keyscan (which a
+          # runner-side MITM could poison). Populate with the droplet's
+          # `/etc/ssh/ssh_host_ed25519_key.pub` in known_hosts format.
+          PAIRING_KNOWN_HOSTS: ${{ secrets.PAIRING_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.PAIRING_DEPLOY_SSH_KEY }}" > ~/.ssh/pairing_deploy
           chmod 0600 ~/.ssh/pairing_deploy
-          ssh-keyscan -H "$PAIRING_HOST" >> ~/.ssh/known_hosts
+          if [[ -n "$PAIRING_KNOWN_HOSTS" ]]; then
+            printf '%s\n' "$PAIRING_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+          else
+            echo "::warning::PAIRING_KNOWN_HOSTS not set; falling back to TOFU ssh-keyscan"
+            ssh-keyscan -H "$PAIRING_HOST" >> ~/.ssh/known_hosts
+          fi
 
       - name: Push .deb to droplet and install
         run: |
