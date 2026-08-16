@@ -297,9 +297,23 @@ prepare_config() {
   _client_id_esc=$(printf '%s' "${CLIENT_ID}" | sed_rescape)
   _password_esc=$(printf '%s' "${PASSWORD}" | sed_rescape)
   _fingerprint_esc=$(printf '%s' "${FINGERPRINT}" | sed_rescape)
-  sed -i "s/#*server = .*/server = \"${_server_esc}\"/g" "$CONFIG_FILE"
-  sed -i "s/#*auth = .*/auth = \"${_client_id_esc}:${_password_esc}\"/g" "$CONFIG_FILE"
-  sed -i "s/#*fingerprint = .*/fingerprint = \"${_fingerprint_esc}\"/g" "$CONFIG_FILE"
+  # Anchor to a real "<key> =" assignment at the start of the line (after
+  # optional indentation and a single leading '#'), so a substring such as
+  # require_fingerprint is never rewritten, and preserve the indentation (\1).
+  sed -i "s/^\([[:space:]]*\)#\{0,1\}server = .*/\1server = \"${_server_esc}\"/g" "$CONFIG_FILE"
+  sed -i "s/^\([[:space:]]*\)#\{0,1\}auth = .*/\1auth = \"${_client_id_esc}:${_password_esc}\"/g" "$CONFIG_FILE"
+  sed -i "s/^\([[:space:]]*\)#\{0,1\}fingerprint = .*/\1fingerprint = \"${_fingerprint_esc}\"/g" "$CONFIG_FILE"
+  # The example config may ship several commented examples for one key (e.g. a
+  # #fingerprint line each for the SHA-256 and legacy MD5 forms); the sed above
+  # would activate every one, leaving a duplicate key that fails the config
+  # parse ("key fingerprint is already defined"). Keep only the first active
+  # server/auth/fingerprint assignment. This pass reads only already-written
+  # lines, so no untrusted deposit value is re-interpolated here.
+  _dedup_tmp="${CONFIG_FILE}.dedup.$$"
+  awk '
+    /^[[:space:]]*(server|auth|fingerprint) = / { if (seen[$1]++) next }
+    { print }
+  ' "$CONFIG_FILE" > "$_dedup_tmp" && cat "$_dedup_tmp" > "$CONFIG_FILE" && rm -f "$_dedup_tmp"
   sed -i "s/#*log_file = .*C.*Program Files.*/""/g" "$CONFIG_FILE"
   sed -i "s/#*log_file = /log_file = /g" "$CONFIG_FILE"
   sed -i "s|#updates_interval = '4h'|updates_interval = '4h'|g" "$CONFIG_FILE"

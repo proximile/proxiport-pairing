@@ -116,6 +116,17 @@ func TestInstallerHandler_SedInjectionGuard(t *testing.T) {
 	// The escaping helper must be present.
 	assert.Contains(t, body, "sed_rescape()", "sed_rescape helper missing from installer")
 
+	// Regression guard for the duplicate-key bug: the example config ships more
+	// than one commented example for a key (e.g. two #fingerprint lines), and a
+	// blind `s/#*fingerprint = .*/.../g` activated every one, leaving a duplicate
+	// key that failed the config parse ("key fingerprint is already defined").
+	// The installer must anchor the replacement to a real assignment and keep
+	// only the first activated server/auth/fingerprint line.
+	assert.Contains(t, body, "seen[$1]++",
+		"installer no longer collapses duplicate activated config keys (duplicate-key regression)")
+	assert.NotContains(t, body, `s/#*fingerprint = .*/`,
+		"installer reverted to the greedy, unanchored fingerprint replacement")
+
 	// Each deposit value must be escaped before use in the sed replacements.
 	for _, v := range []string{"CONNECT_URL", "CLIENT_ID", "PASSWORD", "FINGERPRINT"} {
 		assert.Contains(t, body, "${"+v+"}\" | sed_rescape)",
