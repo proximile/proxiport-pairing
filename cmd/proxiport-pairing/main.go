@@ -45,6 +45,7 @@ func main() {
 	updateHandler := &retrieve.UpdateHandler{
 		StaticDeposit: cfg.StaticDeposit,
 	}
+	uninstallHandler := &retrieve.UninstallHandler{}
 	corsHandler := &cors.Handler{AllowOrigin: cfg.Server.CorsAllowOrigin}
 
 	// Per-IP rate limits for the unauthenticated endpoints. Deposit creates a
@@ -57,6 +58,7 @@ func main() {
 	r.PathPrefix("/").Methods("OPTIONS").Handler(corsHandler)
 	r.Path("/").Methods("POST").Handler(depositLimiter.Middleware(depositHandler))
 	r.Path("/update").Methods("GET").Handler(retrieveLimiter.Middleware(updateHandler))
+	r.Path("/uninstall").Methods("GET").Handler(retrieveLimiter.Middleware(uninstallHandler))
 	r.Path("/{pairingCode:[0-9 a-z A-Z]{7}}").Methods("GET").Handler(retrieveLimiter.Middleware(installerHandler))
 
 	log.Println("proxiport-pairing", Version, "listening on", cfg.Server.Address)
