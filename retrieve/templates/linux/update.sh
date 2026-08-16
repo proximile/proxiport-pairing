@@ -1,5 +1,56 @@
 set -e
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  verify_release_asset
+#   DESCRIPTION:  Verify a downloaded release asset before trusting it, the same
+#                 way the install script does: confirm its SHA-256 against the
+#                 release's checksums.txt and, when cosign is available, verify
+#                 the keyless cosign signature over checksums.txt against the
+#                 pinned signing identity. Aborts the update on any mismatch, and
+#                 degrades to the checksum-only check (with a warning) when cosign
+#                 is absent -- the same trade-off the installer makes. All progress
+#                 output goes to stderr so this is safe to call inside a command
+#                 substitution (e.g. from download_new_version).
+#    PARAMETERS:  1) directory holding the asset  2) asset file name
+#----------------------------------------------------------------------------------------------------------------------
+verify_release_asset() {
+    _dir="$1"
+    _asset="$2"
+    _base="https://github.com/proximile/proxiport/releases/download/${TAG}"
+    curl -fLs "${_base}/checksums.txt" -o "${_dir}/checksums.txt" \
+      || { echo "could not fetch checksums.txt; refusing to update" >&2; exit 1; }
+
+    # Verify the cosign signature over checksums.txt before trusting any hash it
+    # lists. Without this a same-channel attacker able to rewrite both the asset
+    # and checksums.txt would defeat the SHA-256 check below.
+    if is_available cosign; then
+        echo "Verifying release signature with cosign" >&2
+        if ! curl -fLs "${_base}/checksums.txt.sig" -o "${_dir}/checksums.txt.sig" \
+          || ! curl -fLs "${_base}/checksums.txt.pem" -o "${_dir}/checksums.txt.pem"; then
+            echo "cosign is installed but the release signature/certificate could not be downloaded; refusing to update" >&2
+            exit 1
+        fi
+        if ! cosign verify-blob \
+              --certificate "${_dir}/checksums.txt.pem" \
+              --signature "${_dir}/checksums.txt.sig" \
+              --certificate-identity-regexp 'https://github.com/proximile/proxiport' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "${_dir}/checksums.txt" >/dev/null 2>&1; then
+            echo "cosign signature verification failed for checksums.txt; refusing to update a possibly-tampered release" >&2
+            exit 1
+        fi
+    else
+        throw_warning "cosign not found -- the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification." >&2
+    fi
+
+    EXPECTED=$(grep " ${_asset}\$" "${_dir}/checksums.txt" | awk '{print $1}')
+    ACTUAL=$(sha256sum "${_dir}/${_asset}" | awk '{print $1}')
+    if [ -z "${EXPECTED}" ] || [ "${EXPECTED}" != "${ACTUAL}" ]; then
+        echo "checksum mismatch for ${_asset} (expected '${EXPECTED}', got '${ACTUAL}'); refusing to update" >&2
+        exit 1
+    fi
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  download_new_version
 #   DESCRIPTION:  Download the client tarball for $TAG/$TARGET_VERSION
 #                 (resolved in update()) and unpack the binary to a
@@ -9,21 +60,45 @@ download_new_version() {
     TEMP=$(mktemp -d)
     ASSET="proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).tar.gz"
     URL="https://github.com/proximile/proxiport/releases/download/${TAG}/${ASSET}"
-    curl -fLs "${URL}" -o "${TEMP}/proxiport.tar.gz"
+    curl -fLs "${URL}" -o "${TEMP}/${ASSET}"
 
-    # Verify the download against the release's published SHA-256 before using it.
-    curl -fLs "https://github.com/proximile/proxiport/releases/download/${TAG}/checksums.txt" -o "${TEMP}/checksums.txt" \
-      || { echo "could not fetch checksums.txt; refusing to update" >&2; exit 1; }
-    EXPECTED=$(grep " ${ASSET}\$" "${TEMP}/checksums.txt" | awk '{print $1}')
-    ACTUAL=$(sha256sum "${TEMP}/proxiport.tar.gz" | awk '{print $1}')
-    if [ -z "${EXPECTED}" ] || [ "${EXPECTED}" != "${ACTUAL}" ]; then
-        echo "checksum mismatch for ${ASSET} (expected '${EXPECTED}', got '${ACTUAL}'); refusing to update" >&2
-        exit 1
-    fi
+    # Verify the download against the release's signed checksums before using it
+    # (SHA-256 plus, when cosign is present, the signature over checksums.txt).
+    verify_release_asset "${TEMP}" "${ASSET}"
 
-    tar xzf "$TEMP/proxiport.tar.gz" -C "$TEMP" proxiport
-    rm -f "$TEMP/proxiport.tar.gz"
+    tar xzf "${TEMP}/${ASSET}" -C "$TEMP" proxiport
+    rm -f "${TEMP}/${ASSET}"
     echo "$TEMP/proxiport"
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  install_verified_pkg
+#   DESCRIPTION:  Download a .deb/.rpm release asset for $TAG, verify it against
+#                 the release's signed checksums (see verify_release_asset), then
+#                 install the verified file. Used to auto-update dpkg/rpm-managed
+#                 installs, whose plain package-download path performs no
+#                 verification of its own.
+#    PARAMETERS:  1) asset file name (proxiport_<ver>_linux_<arch>.deb|.rpm)
+#----------------------------------------------------------------------------------------------------------------------
+install_verified_pkg() {
+    _asset="$1"
+    _pdir=$(mktemp -d)
+    if ! curl -fLs "https://github.com/proximile/proxiport/releases/download/${TAG}/${_asset}" -o "${_pdir}/${_asset}"; then
+        rm -rf "${_pdir}"
+        throw_fatal "Could not download ${_asset}."
+    fi
+    verify_release_asset "${_pdir}" "${_asset}"
+    throw_info "Installing verified package ${_asset}"
+    case "${_asset}" in
+      *.deb)
+        DEBIAN_FRONTEND=noninteractive apt-get --yes -o Dpkg::Options::="--force-confold" install "${_pdir}/${_asset}"
+        ;;
+      *.rpm)
+        rpm -U "${_pdir}/${_asset}"
+        ;;
+    esac
+    rm -rf "${_pdir}"
+    clean_up_legacy_installation
 }
 
 # Is the installed proxiport client managed by dpkg / rpm?
@@ -116,15 +191,13 @@ update() {
       if is_pkg_managed_deb; then
           abort_on_proxiport_subprocess
           RESTART_IN="foreground"
-          PKG_URL="https://github.com/proximile/proxiport/releases/download/${TAG}/proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).deb"
           throw_info "Updating from ${CURRENT_VERSION} to ${TARGET_VERSION} via DEB package."
-          install_from_deb_download
+          install_verified_pkg "proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).deb"
       elif is_pkg_managed_rpm; then
           abort_on_proxiport_subprocess
           RESTART_IN="foreground"
-          PKG_URL="https://github.com/proximile/proxiport/releases/download/${TAG}/proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).rpm"
           throw_info "Updating from ${CURRENT_VERSION} to ${TARGET_VERSION} via RPM package."
-          install_from_rpm_download
+          install_verified_pkg "proxiport_${TARGET_VERSION}_linux_$(goreleaser_arch).rpm"
       else
           # Install from tar.gz (how the pairing installer installs)
           NEW_VERSION=$(download_new_version)

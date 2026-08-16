@@ -1,6 +1,7 @@
 package retrieve
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 
@@ -22,7 +23,9 @@ func (rh *InstallerHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	pairingCode := vars["pairingCode"]
 	os := clientOs(r)
 	var data deposit.Deposit
-	if pairingCode == rh.StaticDeposit.Code {
+	// Constant-time match against the static pairing code, guarded so an empty
+	// (unconfigured) static code never matches a request.
+	if rh.StaticDeposit.Code != "" && subtle.ConstantTimeCompare([]byte(pairingCode), []byte(rh.StaticDeposit.Code)) == 1 {
 		data = rh.StaticDeposit
 	} else {
 		val, found := rh.Cache.Get(pairingCode)
