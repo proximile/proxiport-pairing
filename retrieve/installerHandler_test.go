@@ -153,3 +153,27 @@ func TestInstallerHandler_ConfigKeysSetSafely(t *testing.T) {
 	assert.Contains(t, body, "set_toml_key monitoring net_", "net interface not set via set_toml_key")
 	assert.Contains(t, body, "set_toml_key interpreter-aliases", "interpreter alias not set via set_toml_key")
 }
+
+// TestInstallerHandler_VerificationIsFresh guards the post-install verify step:
+// it must scan only THIS run's log (a good install must not report failure just
+// because a stale /var/log/proxiport/proxiport.log holds old errors from a
+// previous config/server), and it must recognize the server's current
+// "already connected" rejection so the duplicate-machine-id auto-recovery fires.
+func TestInstallerHandler_VerificationIsFresh(t *testing.T) {
+	c := cache.New()
+	demoDeposit := deposit.Deposit{
+		ConnectUrl: "https://proxiport.example.com", Fingerprint: "2a:c1", ClientId: "client1", Password: "foobaz", Code: "cZ1ZhsG",
+	}
+	installerHandler := &retrieve.InstallerHandler{StaticDeposit: demoDeposit, Cache: c}
+	request, _ := http.NewRequest(http.MethodGet, "/cZ1ZhsG", nil)
+	request.Header.Set("User-Agent", "curl/7.79.1")
+	request = mux.SetURLVars(request, map[string]string{"pairingCode": "cZ1ZhsG"})
+	recorder := httptest.NewRecorder()
+	installerHandler.ServeHTTP(recorder, request)
+	body := recorder.Body.String()
+
+	// The client log is cleared before the first start, so verify scans only this run.
+	assert.Contains(t, body, `rm -f "$LOG_FILE"`, "installer no longer clears the stale log before the first start")
+	// check_log recognizes the current server rejection so the machine-id auto-recovery fires.
+	assert.Contains(t, body, "client is already connected", "check_log no longer matches the current 'already connected' server message")
+}

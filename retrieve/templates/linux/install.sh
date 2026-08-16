@@ -261,6 +261,11 @@ create_systemd_service() {
         test -e /etc/systemd/system/proxiport.service && rm -f /etc/systemd/system/proxiport.service
         /usr/local/bin/proxiport --service install --service-user "${USER}" --config /etc/proxiport/proxiport.conf
     fi
+    # Start each install with a fresh client log so verify_and_terminate's error
+    # scan (check_log) only sees this run, not stale errors from a previous
+    # config or server -- otherwise old failures make a good install report as
+    # failed. (use_alternative_machineid clears it the same way before its retry.)
+    rm -f "$LOG_FILE"
     start_proxiport
 }
 
@@ -512,10 +517,11 @@ check_log() {
     echo 2>&1 "[!] ProxiPort very likely failed to start."
     return 4
   fi
-  if grep -q "client id .* is already in use" "$LOG_FILE"; then
+  if grep -qE "client is already connected|previous session was not properly closed|client id .* is already in use" "$LOG_FILE"; then
     echo ""
-    echo 2>&1 "[!] Configuration error: client id is already in use."
-    echo 2>&1 "[!] Likely you have systems with an duplicated machine-id in your network."
+    echo 2>&1 "[!] The client id is already connected / in use on the server."
+    echo 2>&1 "[!] Likely a duplicated /etc/machine-id (e.g. hosts cloned from one image)."
+    echo 2>&1 "[!] Retrying with a unique id derived from the network cards ..."
     echo ""
     return 1
   elif grep -q "Connection error: websocket: bad handshake" "$LOG_FILE"; then
