@@ -366,10 +366,6 @@ enable_lan_monitoring() {
     # Version does not handle network interfaces yet.
     return 0
   fi
-  if grep "^\s*net_[wl]" "$CONFIG_FILE"; then
-    # Network interfaces already configured
-    return 0
-  fi
   echo "Enabling Network monitoring"
   for IFACE in /sys/class/net/*; do
     IFACE=$(basename "${IFACE}")
@@ -382,12 +378,10 @@ enable_lan_monitoring() {
       NET_WAN="$IFACE"
     fi
   done
-  if [ -n "$NET_LAN" ]; then
-    sed -i "/^\[monitoring\]/a \ \ net_lan = ['${NET_LAN}' , '1000' ]" "$CONFIG_FILE"
-  fi
-  if [ -n "$NET_WAN" ]; then
-    sed -i "/^\[monitoring\]/a \ \ net_wan = ['${NET_WAN}' , '1000' ]" "$CONFIG_FILE"
-  fi
+  # set_toml_key is idempotent (replace-or-insert), so re-running the installer
+  # refreshes the interfaces in [monitoring] instead of appending duplicates.
+  [ -n "$NET_LAN" ] && set_toml_key monitoring net_lan "['${NET_LAN}' , '1000' ]"
+  [ -n "$NET_WAN" ] && set_toml_key monitoring net_wan "['${NET_WAN}' , '1000' ]"
 }
 
 detect_interpreters() {
@@ -409,12 +403,9 @@ detect_interpreters() {
       continue
     fi
     echo "Interpreter '$ITEM' found in '$FOUND'"
-    if grep -q -E "^\s*$ITEM =" "$CONFIG_FILE"; then
-      echo "Interpreter '$ITEM' already registered."
-      continue
-    fi
-    # Append the found interpreter to the config
-    sed -i "/^\[interpreter-aliases\]/a \ \ $ITEM = \"$FOUND\"" "${CONFIG_FILE}"
+    # Idempotent: set_toml_key replaces an existing alias or inserts a new one,
+    # so re-running the installer never duplicates an interpreter entry.
+    set_toml_key interpreter-aliases "$ITEM" "\"$FOUND\""
   done
 }
 

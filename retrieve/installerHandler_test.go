@@ -144,9 +144,12 @@ func TestInstallerHandler_ConfigKeysSetSafely(t *testing.T) {
 		assert.NotContains(t, body, sed, "installer reverted to sed-based key replacement")
 	}
 
-	// enabled is set with set_toml_key, never blindly appended after a section header.
-	assert.NotContains(t, body, `remote-commands\]/a`, "remote-commands.enabled blindly appended")
-	assert.NotContains(t, body, `remote-scripts\]/a`, "remote-scripts.enabled blindly appended")
+	// No config value is appended after a section header anywhere -- enabled,
+	// net_wan/net_lan and the interpreter aliases all go through the idempotent
+	// set_toml_key, so re-running the installer never duplicates a key.
+	assert.NotContains(t, body, "]/a ", "installer still uses a blind `sed .../a` append after a section header")
 	assert.Contains(t, body, "set_toml_key remote-commands enabled", "remote-commands.enabled not set via set_toml_key")
 	assert.Contains(t, body, "set_toml_key remote-scripts enabled", "remote-scripts.enabled not set via set_toml_key")
+	assert.Contains(t, body, "set_toml_key monitoring net_", "net interface not set via set_toml_key")
+	assert.Contains(t, body, "set_toml_key interpreter-aliases", "interpreter alias not set via set_toml_key")
 }
