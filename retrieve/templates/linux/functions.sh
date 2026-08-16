@@ -68,20 +68,40 @@ is_available() {
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
-#          NAME:  sed_rescape
-#   DESCRIPTION:  Read a raw string on stdin and emit it escaped so it is safe
-#                 to splice into the REPLACEMENT half of a `sed 's/PAT/REPL/'`
-#                 command that uses '/' as its delimiter. Backslash, ampersand
-#                 and the '/' delimiter are the only characters with special
-#                 meaning there, so all three are escaped. The value is only
-#                 ever sed's stdin (data), never part of the sed program, so it
-#                 cannot close the s-command and inject a further command such
-#                 as GNU sed's `e` -- which this installer, running as root,
-#                 would otherwise execute. Escape backslashes first so the
-#                 backslashes added for '&' and '/' are not themselves doubled.
+#          NAME:  set_toml_key
+#   DESCRIPTION:  set_toml_key <section> <key> <value>
+#                 Set "<key> = <value>" inside the [<section>] table of
+#                 $CONFIG_FILE, idempotently: replace the FIRST existing
+#                 occurrence of the key in that section (commented or not),
+#                 dropping any later duplicates of it in the same section, and
+#                 insert it if the section has none. No blind appends, so
+#                 re-running over an existing config (or a template that ships
+#                 several commented examples for one key) never leaves a
+#                 duplicate key that fails proxiport's TOML parse.
+#
+#                 The value is passed to awk via the ENVIRONMENT (STK_VAL), not
+#                 spliced into the awk program or a shell/sed command, so an
+#                 untrusted deposit value needs no escaping and cannot inject
+#                 code -- it is only ever printed as data. Pass the value already
+#                 quoted where TOML needs quotes, e.g.
+#                 set_toml_key client server "\"$CONNECT_URL\"".
 #----------------------------------------------------------------------------------------------------------------------
-sed_rescape() {
-  sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/\//\\\//g'
+set_toml_key() {
+  _stk_tmp="${CONFIG_FILE}.stk.$$"
+  STK_SECT="$1" STK_KEY="$2" STK_VAL="$3" awk '
+    BEGIN {
+      sect = ENVIRON["STK_SECT"]; key = ENVIRON["STK_KEY"]; val = ENVIRON["STK_VAL"]
+      insec = 0; done = 0
+      keyre = "^[[:space:]]*#?[[:space:]]*" key "[[:space:]]*="
+    }
+    /^[[:space:]]*\[[A-Za-z[]/ {
+      if (insec && !done) { print "  " key " = " val; done = 1 }
+      h = $0; gsub(/[[:space:]]/, "", h); insec = (h == "[" sect "]"); print; next
+    }
+    insec && $0 ~ keyre { if (!done) { print "  " key " = " val; done = 1 } next }
+    { print }
+    END { if (insec && !done) print "  " key " = " val }
+  ' "$CONFIG_FILE" > "$_stk_tmp" && cat "$_stk_tmp" > "$CONFIG_FILE" && rm -f "$_stk_tmp"
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------

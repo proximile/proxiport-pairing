@@ -88,14 +88,21 @@ func TestInstallerHandler_ServeHTTP(t *testing.T) {
 	}
 }
 
-// TestInstallerHandler_SedInjectionGuard is a regression guard for the
-// unauthenticated-deposit -> root-RCE class of bug. The four deposit fields are
-// spliced into `sed -i` replacements the (root) Linux installer runs; if they
-// reach sed raw, a value like `x/g;e <cmd>;#` breaks out of the s-command into
-// GNU sed's `e`, which runs as root. The installer must therefore route every
-// deposit value through sed_rescape before the sed calls. This test fails if
-// anyone reverts prepare_config to raw interpolation.
-func TestInstallerHandler_SedInjectionGuard(t *testing.T) {
+// TestInstallerHandler_ConfigKeysSetSafely guards two classes of bug in how the
+// (root) Linux installer writes the deposit fields into proxiport.conf:
+//
+//   - unauthenticated-deposit -> root RCE: the four deposit fields must never be
+//     spliced into a shell/sed command. set_toml_key passes the value through
+//     the ENVIRONMENT into awk, where it is only ever printed as data, so a
+//     crafted URL/id/password/fingerprint cannot inject a root command.
+//   - duplicate-key parse failure: the installer must set each key idempotently
+//     (replace-first-or-insert, drop dups within the section), never blindly
+//     append after a section header -- otherwise a re-install over an existing
+//     config, or a template shipping several commented examples for one key,
+//     leaves a duplicate key that fails proxiport's TOML parse.
+//
+// This test fails if anyone reintroduces raw sed interpolation or a blind append.
+func TestInstallerHandler_ConfigKeysSetSafely(t *testing.T) {
 	c := cache.New()
 	demoDeposit := deposit.Deposit{
 		ConnectUrl:  "https://proxiport.example.com",
@@ -113,32 +120,33 @@ func TestInstallerHandler_SedInjectionGuard(t *testing.T) {
 	installerHandler.ServeHTTP(recorder, request)
 	body := recorder.Body.String()
 
-	// The escaping helper must be present.
-	assert.Contains(t, body, "sed_rescape()", "sed_rescape helper missing from installer")
+	// The section-scoped setter must be present and pass the value via the
+	// environment into awk, never spliced into the program text or a shell/sed
+	// command.
+	assert.Contains(t, body, "set_toml_key()", "set_toml_key helper missing from installer")
+	assert.Contains(t, body, `STK_VAL="$3" awk`, "set_toml_key must pass the value via the environment")
+	assert.Contains(t, body, `ENVIRON["STK_VAL"]`, "set_toml_key must read the value from the environment, not the program text")
 
-	// Regression guard for the duplicate-key bug: the example config ships more
-	// than one commented example for a key (e.g. two #fingerprint lines), and a
-	// blind `s/#*fingerprint = .*/.../g` activated every one, leaving a duplicate
-	// key that failed the config parse ("key fingerprint is already defined").
-	// The installer must anchor the replacement to a real assignment and keep
-	// only the first activated server/auth/fingerprint line.
-	assert.Contains(t, body, "seen[$1]++",
-		"installer no longer collapses duplicate activated config keys (duplicate-key regression)")
-	assert.NotContains(t, body, `s/#*fingerprint = .*/`,
-		"installer reverted to the greedy, unanchored fingerprint replacement")
-
-	// Each deposit value must be escaped before use in the sed replacements.
-	for _, v := range []string{"CONNECT_URL", "CLIENT_ID", "PASSWORD", "FINGERPRINT"} {
-		assert.Contains(t, body, "${"+v+"}\" | sed_rescape)",
-			"deposit value "+v+" is not routed through sed_rescape before sed")
-	}
-
-	// The raw, injectable interpolation forms must be gone.
-	for _, raw := range []string{
-		`auth = \"${CLIENT_ID}:${PASSWORD}\"`,
-		`fingerprint = \"${FINGERPRINT}\"`,
-		`server = \"${CONNECT_URL}\"`,
+	// Each deposit value is written with set_toml_key.
+	for _, call := range []string{
+		"set_toml_key client server ",
+		"set_toml_key client auth ",
+		"set_toml_key client fingerprint ",
 	} {
-		assert.NotContains(t, body, raw, "raw un-escaped deposit interpolation still present in installer sed")
+		assert.Contains(t, body, call, "deposit value not set via set_toml_key: "+call)
 	}
+
+	// No deposit value is spliced into a sed s-command any more.
+	for _, sed := range []string{
+		`#\{0,1\}fingerprint = .*`, // the anchored sed
+		`s/#*fingerprint = .*/`,    // the older greedy sed
+	} {
+		assert.NotContains(t, body, sed, "installer reverted to sed-based key replacement")
+	}
+
+	// enabled is set with set_toml_key, never blindly appended after a section header.
+	assert.NotContains(t, body, `remote-commands\]/a`, "remote-commands.enabled blindly appended")
+	assert.NotContains(t, body, `remote-scripts\]/a`, "remote-scripts.enabled blindly appended")
+	assert.Contains(t, body, "set_toml_key remote-commands enabled", "remote-commands.enabled not set via set_toml_key")
+	assert.Contains(t, body, "set_toml_key remote-scripts enabled", "remote-scripts.enabled not set via set_toml_key")
 }
