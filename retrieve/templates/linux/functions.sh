@@ -98,8 +98,8 @@ uninstall() {
   pkill -9 proxiport >/dev/null 2>&1 || true
   proxiport --service uninstall >/dev/null 2>&1 || true
   FILES="/usr/local/bin/proxiport
-    /usr/local/bin/proxiport
     /etc/systemd/system/proxiport.service
+    /usr/lib/systemd/system/proxiport.service
     /etc/sudoers.d/proxiport-update-status
     /etc/sudoers.d/proxiport-all-cmd
     /etc/init.d/proxiport
