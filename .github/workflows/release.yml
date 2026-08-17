@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  # Required for keyless Sigstore signing (cosign requests an OIDC token from
+  # the Actions provider to obtain a short-lived Fulcio certificate).
+  id-token: write
 
 jobs:
   release:
@@ -23,6 +26,18 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: '1.25.13'
+
+      # Gate the release on a call-graph-aware vulnerability scan so a tag can
+      # never ship binaries built against a reachable known-vulnerable dep/stdlib.
+      - name: govulncheck (dependency vulnerability scan)
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      # cosign signs the checksums file (keyless); syft generates the SBOMs.
+      # Both must be on PATH before goreleaser runs its signs/sboms steps.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
