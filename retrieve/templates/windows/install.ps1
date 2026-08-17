@@ -89,8 +89,16 @@ $configContent = Get-Content "$( $installDir )\proxiport.example.conf" -Encoding
 Write-Output "* Creating new configuration file $( $configFile )."
 # Put variables into the config
 $logFile = "$( $installDir )\proxiport.log"
-$configContent = $configContent -replace 'server = .*', "server = `"$( $connect_url )`""
-$configContent = $configContent -replace '.*auth = .*', "  auth = `"$( $client_id ):$( $password )`""
+# The deposit values below are used as -replace REPLACEMENT strings, where .NET
+# treats '$' as a substitution token ($&, $1, $$, ...). Double every '$' first so
+# a value that contains one is inserted literally instead of corrupting or
+# injecting into the config line. (The fingerprint below is assigned with -f and
+# needs no such escaping.)
+$connect_url_r = $connect_url -replace '\$', '$$$$'
+$client_id_r = $client_id -replace '\$', '$$$$'
+$password_r = $password -replace '\$', '$$$$'
+$configContent = $configContent -replace 'server = .*', "server = `"$( $connect_url_r )`""
+$configContent = $configContent -replace '.*auth = .*', "  auth = `"$( $client_id_r ):$( $password_r )`""
 # Activate only the FIRST fingerprint example. The template ships several
 # commented examples (SHA-256 and legacy MD5 forms); a plain -replace activates
 # every one, producing a duplicate 'fingerprint' key that fails the config

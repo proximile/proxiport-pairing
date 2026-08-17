@@ -18,6 +18,16 @@ type Config struct {
 		// cross-origin requests to the deposit/retrieve endpoints. Empty by
 		// default (no CORS). Never set this to "*".
 		CorsAllowOrigin string `mapstructure:"cors_allow_origin"`
+		// DepositAuthToken, when non-empty, is a shared secret the depositor
+		// (the ProxiPort server) must present on POST / as an
+		// "Authorization: Bearer <token>" header. Empty by default: deposits
+		// are unauthenticated, preserving existing behavior.
+		DepositAuthToken string `mapstructure:"deposit_auth_token"`
+		// TrustedProxies lists reverse-proxy CIDRs (or bare IPs) whose
+		// X-Forwarded-For / X-Real-IP headers may be trusted when deriving the
+		// per-client rate-limit key. Empty by default: only the direct peer
+		// address is used.
+		TrustedProxies []string `mapstructure:"trusted_proxies"`
 	} `mapstructure:"server"`
 	StaticDeposit deposit.Deposit `mapstructure:"static-deposit"`
 }

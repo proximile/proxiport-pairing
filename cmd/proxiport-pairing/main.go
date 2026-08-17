@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"log"
@@ -54,12 +55,32 @@ func main() {
 	depositLimiter := ratelimit.New(1, 10)  // ~1/sec sustained, burst 10
 	retrieveLimiter := ratelimit.New(2, 30) // ~2/sec sustained, burst 30
 
+	// Trust X-Forwarded-For / X-Real-IP only from the operator-configured
+	// reverse-proxy ranges, so per-IP limits key on the real client rather than
+	// collapsing to a single bucket behind a proxy. Empty by default (direct
+	// peer address only).
+	trustedProxies, err := ratelimit.ParseCIDRs(cfg.Server.TrustedProxies)
+	if err != nil {
+		log.Fatalf("invalid server.trusted_proxies: %v", err)
+	}
+	depositLimiter.SetTrustedProxies(trustedProxies)
+	retrieveLimiter.SetTrustedProxies(trustedProxies)
+
+	// The deposit endpoint mints a pairing code (and thus a root installer).
+	// When a deposit_auth_token is configured, require it as a bearer token so
+	// only the ProxiPort server can deposit; empty by default, leaving deposits
+	// open exactly as before.
+	var depositEndpoint http.Handler = depositHandler
+	if cfg.Server.DepositAuthToken != "" {
+		depositEndpoint = requireBearer(cfg.Server.DepositAuthToken, depositEndpoint)
+	}
+
 	r := mux.NewRouter()
 	r.PathPrefix("/").Methods("OPTIONS").Handler(corsHandler)
-	r.Path("/").Methods("POST").Handler(depositLimiter.Middleware(depositHandler))
+	r.Path("/").Methods("POST").Handler(depositLimiter.Middleware(depositEndpoint))
 	r.Path("/update").Methods("GET").Handler(retrieveLimiter.Middleware(updateHandler))
 	r.Path("/uninstall").Methods("GET").Handler(retrieveLimiter.Middleware(uninstallHandler))
-	r.Path("/{pairingCode:[0-9 a-z A-Z]{7}}").Methods("GET").Handler(retrieveLimiter.Middleware(installerHandler))
+	r.Path("/{pairingCode:[0-9a-zA-Z]{7}}").Methods("GET").Handler(retrieveLimiter.Middleware(installerHandler))
 
 	log.Println("proxiport-pairing", Version, "listening on", cfg.Server.Address)
 	srv := &http.Server{
@@ -71,4 +92,21 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// requireBearer wraps h so a request must carry the exact bearer token in its
+// Authorization header ("Authorization: Bearer <token>"). The comparison is
+// constant-time. Used to gate the deposit endpoint when a deposit_auth_token is
+// configured; unmatched requests are rejected with 401.
+func requireBearer(token string, h http.Handler) http.Handler {
+	want := []byte("Bearer " + token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := []byte(r.Header.Get("Authorization"))
+		if subtle.ConstantTimeCompare(got, want) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }

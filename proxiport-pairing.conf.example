@@ -10,6 +10,17 @@
   ## are normally called by provisioning tooling, not a browser. Set to a
   ## specific origin if you front them with a web app. Never use "*".
   #cors_allow_origin = "https://app.example.com"
+  ## Shared secret required on the deposit endpoint (POST /). Empty by default,
+  ## which leaves deposits unauthenticated (existing behavior). When set, the
+  ## depositor — the ProxiPort server — must send it as an
+  ## "Authorization: Bearer <token>" header; requests without a matching token
+  ## are rejected with 401.
+  #deposit_auth_token = "change-me-to-a-long-random-string"
+  ## Reverse-proxy CIDRs (or bare IPs) allowed to set X-Forwarded-For /
+  ## X-Real-IP. Empty by default: the per-IP rate limiter keys on the direct
+  ## peer address. Set this to your proxy's address(es) when running behind one
+  ## so limits apply per real client instead of collapsing to a single bucket.
+  #trusted_proxies = ["10.0.0.0/8", "192.168.0.0/16"]
 
 [static-deposit]
   ## A static pairing code that bypasses the cache. Useful for
