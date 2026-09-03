@@ -16,7 +16,20 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
-var validate *validator.Validate
+// validate is built once at startup and used read-only. The go-playground
+// validator is safe for concurrent use once its validations are registered;
+// re-creating it per request (as this once did) races the shared global under
+// concurrent deposits and could run Struct() against a validator that has not
+// yet registered "nocontrol", 400-ing a valid deposit or panicking.
+var validate = newValidator()
+
+func newValidator() *validator.Validate {
+	v := validator.New()
+	_ = v.RegisterValidation("nocontrol", func(fl validator.FieldLevel) bool {
+		return !hasControl(fl.Field().String())
+	})
+	return v
+}
 
 const alphabet = "abcdefghijklmnpqrstuvwyxzABCDEFGHIJKLMNPQRSTUVWXYZ123456789" // Chars used to generate the code
 const ttl = 300 * time.Second                                                  // Cache items aka pairing code lifetime
@@ -44,11 +57,19 @@ func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	} else {
 		// #nosec G120 -- r.Body is wrapped with http.MaxBytesReader at the
 		// top of ServeHTTP, so the parse is bounded to maxBodyBytes.
+		// ParseMultipartForm runs ParseForm first, so an application/x-www-form-
+		// urlencoded body (curl -d's default) populates r.PostForm and then
+		// returns http.ErrNotMultipart; that is not a failure — only a genuine
+		// parse error should 406.
 		err := r.ParseMultipartForm(formMaxMem)
-		if err != nil {
+		if err != nil && !errors.Is(err, http.ErrNotMultipart) {
 			log.Printf("Error %v\n", err)
 			rw.WriteHeader(http.StatusNotAcceptable)
 			return
+		}
+		// A multipart parse may spill file parts to temp files; remove them.
+		if r.MultipartForm != nil {
+			defer func() { _ = r.MultipartForm.RemoveAll() }()
 		}
 		deposit.ClientId = r.FormValue("client_id")
 		deposit.ConnectUrl = r.FormValue("connect_url")
@@ -94,10 +115,6 @@ func hasControl(s string) bool {
 }
 
 func validateInput(deposit *Deposit) (bool, error) {
-	validate = validator.New()
-	_ = validate.RegisterValidation("nocontrol", func(fl validator.FieldLevel) bool {
-		return !hasControl(fl.Field().String())
-	})
 	err := validate.Struct(deposit)
 	if err == nil {
 		return true, nil

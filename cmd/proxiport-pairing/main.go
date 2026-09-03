@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -43,9 +44,7 @@ func main() {
 		StaticDeposit: cfg.StaticDeposit,
 		Cache:         c,
 	}
-	updateHandler := &retrieve.UpdateHandler{
-		StaticDeposit: cfg.StaticDeposit,
-	}
+	updateHandler := &retrieve.UpdateHandler{}
 	uninstallHandler := &retrieve.UninstallHandler{}
 	corsHandler := &cors.Handler{AllowOrigin: cfg.Server.CorsAllowOrigin}
 
@@ -73,6 +72,8 @@ func main() {
 	var depositEndpoint http.Handler = depositHandler
 	if cfg.Server.DepositAuthToken != "" {
 		depositEndpoint = requireBearer(cfg.Server.DepositAuthToken, depositEndpoint)
+	} else if !isLoopbackBind(cfg.Server.Address) {
+		log.Printf("WARNING: the deposit endpoint is UNAUTHENTICATED (no deposit_auth_token set) and bound to a non-loopback address %q. Anyone who can reach it can mint credential-bearing installers. Set deposit_auth_token before exposing this service.", cfg.Server.Address)
 	}
 
 	r := mux.NewRouter()
@@ -92,6 +93,25 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// isLoopbackBind reports whether addr (host:port) binds only to loopback. An
+// empty host or a wildcard (0.0.0.0, ::) is treated as non-loopback (exposed), and
+// a hostname that does not resolve to a literal loopback IP is treated as exposed
+// so the unauthenticated-deposit warning is not silently suppressed.
+func isLoopbackBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	switch host {
+	case "":
+		return false
+	case "localhost":
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // requireBearer wraps h so a request must carry the exact bearer token in its

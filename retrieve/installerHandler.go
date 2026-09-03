@@ -38,6 +38,11 @@ func (rh *InstallerHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data = val.(deposit.Deposit)
+		// Single-use: a rendered installer carries live credentials, so a
+		// pairing code must not stay replayable for the rest of its TTL. Delete
+		// on a cache hit. (The static/config deposit above is intentionally
+		// reusable and is never cached, so it is unaffected.)
+		rh.Cache.Delete(pairingCode)
 	}
 	renderInstaller(rw, os, data)
 }
