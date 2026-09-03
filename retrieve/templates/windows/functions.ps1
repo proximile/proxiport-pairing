@@ -214,7 +214,7 @@ function Test-TomlKeyExist
         [Parameter(Mandatory)]
         [String]$Key
     )
-    if (-not$ConfigContent -match [Regex]::Escape("^[$( $Block )]"))
+    if (($ConfigContent -join "`n") -notmatch ("(?m)^\[" + [Regex]::Escape($Block) + "\]"))
     {
         $ConfigContent
         Write-Error "Block [$( $Block )] not found in config content"
@@ -256,7 +256,7 @@ function Set-TomlVar
         [Parameter(Mandatory)]
         [String]$Value
     )
-    if (-not$ConfigContent -match [Regex]::Escape("^[$( $Block )]"))
+    if (($ConfigContent -join "`n") -notmatch ("(?m)^\[" + [Regex]::Escape($Block) + "\]"))
     {
         Write-Error "Block [$( $Block )] not found in config content"
         $configContent

@@ -263,16 +263,20 @@ insert_scripts() {
 #   DESCRIPTION:  check if scripts can be activated
 #----------------------------------------------------------------------------------------------------------------------
 check_scripts() {
-  if grep -q remote-scripts "$CONFIG_FILE"; then
+  # Already configured (section present) -> nothing to do. Anchor on the section
+  # header, not a bare 'remote-scripts' substring, so a comment mentioning it
+  # does not preempt insertion of a genuinely missing section.
+  if grep -q "\[remote-scripts\]" "$CONFIG_FILE"; then
     return 0
   fi
 
-  if [ "$ENABLE_SCRIPTS" = 'true' ]; then
-    if grep -q "\[remote-scripts\]" "$CONFIG_FILE"; then
-        insert_scripts
-        return 0
-      fi
-
+  # Section absent: honor an explicit -x/-d choice non-interactively by inserting
+  # it (insert_scripts writes enabled=$ENABLE_SCRIPTS). This was previously gated
+  # on the section already existing -- unreachable here -- so -x could never
+  # insert a missing section non-interactively and fell through to the error.
+  if [ "$ENABLE_SCRIPTS" = 'true' ] || [ "$ENABLE_SCRIPTS" = 'false' ]; then
+    insert_scripts
+    return 0
   fi
   if is_terminal; then
     true

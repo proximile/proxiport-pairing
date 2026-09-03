@@ -26,6 +26,7 @@ notice. The combined work is AGPL-3.0-or-later.
 | POST   | `/`              | Deposit credentials; receive a pairing code.    |
 | GET    | `/<code>`        | Render the installer with those credentials.    |
 | GET    | `/update`        | Render the update script (no credentials).      |
+| GET    | `/uninstall`     | Render the uninstaller script (no credentials). |
 
 Linux vs. Windows is dispatched off the `User-Agent` header — anything
 matching `PowerShell` gets the `.ps1` rendering; everything else gets

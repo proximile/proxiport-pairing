@@ -2,13 +2,11 @@ package retrieve
 
 import (
 	"net/http"
-
-	"github.com/proximile/proxiport-pairing/deposit"
 )
 
-type UpdateHandler struct {
-	StaticDeposit deposit.Deposit
-}
+// UpdateHandler serves the credential-free update script. It carries no deposit
+// data: the update path renders static templates only.
+type UpdateHandler struct{}
 
 // Handle the request for a client update.
 // No client data is needed

@@ -359,7 +359,7 @@ prepare_config() {
     fi
     cat <<EOF >$CLIENT_ATTRIBUTES
 {
-  "tags": [${TAGS}],
+  "tags": [${XTAG}],
   "labels": { ${LABELS} }
 }
 EOF
@@ -443,6 +443,7 @@ install_client() {
   prepare_config
   enable_lan_monitoring
   detect_interpreters
+  enable_file_reception
   set_file_and_dir_owner
   if is_available openrc; then
     create_openrc_service

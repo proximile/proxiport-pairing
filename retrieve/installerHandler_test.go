@@ -88,6 +88,39 @@ func TestInstallerHandler_ServeHTTP(t *testing.T) {
 	}
 }
 
+// TestInstallerHandler_CacheIsSingleUse asserts a cached pairing code is consumed
+// on first retrieval: the rendered installer carries live credentials, so the code
+// must 404 on replay rather than stay fetchable for the rest of its TTL. The
+// static/config deposit is intentionally reusable and must keep serving.
+func TestInstallerHandler_CacheIsSingleUse(t *testing.T) {
+	c := cache.New()
+	dep := deposit.Deposit{
+		ConnectUrl:  "https://proxiport.example.com",
+		Fingerprint: "2a:c1:71:09:80:ba:7c:10:05:e5:2c:99:6d:15:56:24",
+		ClientId:    "client1",
+		Password:    "foobaz",
+		Code:        "STATIC7",
+	}
+	c.Set("CACHED1", dep, 10*time.Second)
+	h := &retrieve.InstallerHandler{StaticDeposit: dep, Cache: c}
+
+	get := func(code string) int {
+		req, _ := http.NewRequest(http.MethodGet, "/"+code, nil)
+		req = mux.SetURLVars(req, map[string]string{"pairingCode": code})
+		req.Header.Set("User-Agent", "curl/7.79.1")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Result().StatusCode
+	}
+
+	assert.Equal(t, 200, get("CACHED1"), "first fetch of a cached code should succeed")
+	assert.Equal(t, 404, get("CACHED1"), "cached pairing code must be single-use (deleted after first fetch)")
+
+	// The static/config deposit is not cached and must remain reusable.
+	assert.Equal(t, 200, get("STATIC7"), "static deposit should serve")
+	assert.Equal(t, 200, get("STATIC7"), "static deposit must stay reusable")
+}
+
 // TestInstallerHandler_ConfigKeysSetSafely guards two classes of bug in how the
 // (root) Linux installer writes the deposit fields into proxiport.conf:
 //
