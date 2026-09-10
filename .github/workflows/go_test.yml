@@ -19,15 +19,24 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.8'
 
       - name: Go Test
         run: go test -race ./...
 
       # Known-vulnerability scan of the module (deps + the Go stdlib version).
       # govulncheck is call-graph aware, so it only fails on vulns actually
-      # reachable from our code. @latest tracks the newest scanner + Go vuln DB.
-      # A newly-disclosed reachable vuln can turn main red with no code change —
-      # intended; move to a scheduled run if it ever proves disruptive.
+      # reachable from our code.
+      #
+      # The scanner is pinned; the vulnerability database is not. govulncheck
+      # fetches the database at run time, so a pinned scanner still sees
+      # newly-disclosed vulnerabilities, and a newly-disclosed reachable one can
+      # still turn main red with no code change — intended.
+      #
+      # It used to be @latest, which is remote code resolved at run time in a
+      # job that gates every merge. That broke this repo's CI outright when
+      # x/vuln v1.8.0 raised its Go requirement to 1.26 while setup-go pins
+      # GOTOOLCHAIN=local: the gate failed for a reason that had nothing to do
+      # with the code under test. Bump this deliberately.
       - name: govulncheck (dependency vulnerability scan)
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
