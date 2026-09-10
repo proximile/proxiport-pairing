@@ -50,8 +50,15 @@ catch
         exit 1
     }
 }
-# Download the package from GitHub
-$downloadFile = Invoke-Download -pkgUrl $pkgUrl
+# Download the package from GitHub.
+#
+# Stage in a sibling of the install directory, not inside it: %ProgramFiles%
+# grants BUILTIN\Users read and execute only, so a sibling is equally
+# protected, while staging inside $installDir would both create it before the
+# "already installed" check above can guard a retry and put the archive inside
+# its own extraction destination (which Expand-Zip refuses).
+$stagingDir = Get-StagingDir -Path "$( $Env:Programfiles )\proxiport-install-tmp"
+$downloadFile = Invoke-Download -pkgUrl $pkgUrl -StagingDir $stagingDir
 Write-Information "* Download finished and stored to $( $downloadFile )."
 # Install
 if ($downloadFile -match '\.zip$')
@@ -200,7 +207,7 @@ Start-Service -Name proxiport
 Get-Service proxiport
 
 # Clean Up
-Remove-Item $downloadFile
+Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
 if ($msiLog -And (Test-Path $msiLog))
 {
     Remove-Item $msiLog -Force

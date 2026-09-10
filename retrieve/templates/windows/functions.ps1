@@ -59,6 +59,36 @@ function Get-Log
 }
 
 # Extract a ZIP file
+function Get-StagingDir
+{
+    <#
+    .SYNOPSIS
+        Return an empty directory that only SYSTEM and Administrators can write to.
+    .DESCRIPTION
+        C:\Windows\Temp must never be used to stage anything a privileged
+        process later reads, executes or copies into place. Its default DACL
+        grants BUILTIN\Users:(CI)(S,WD,AD,X) -- create files and create
+        subdirectories -- and the (CI) flag inherits into every subdirectory at
+        every depth, including one SYSTEM created. So any unprivileged local
+        user can fill an empty slot there and have it picked up. %ProgramFiles%
+        grants BUILTIN\Users read and execute only, which is what makes it a
+        safe staging root.
+    #>
+    Param(
+        [Parameter(Mandatory = $true)]
+        [String] $Path
+    )
+    if (Test-Path $Path)
+    {
+        Remove-Item $Path -Recurse -Force
+    }
+    # Deliberately no -Force on the create: an unprivileged user cannot create
+    # this path, so if something is still there after the Remove-Item, stop
+    # rather than reuse it.
+    New-Item -ItemType Directory -Path $Path -ErrorAction Stop | Out-Null
+    return $Path
+}
+
 function Expand-Zip
 {
     Param(
@@ -67,6 +97,14 @@ function Expand-Zip
         [parameter(Mandatory = $true)]
         [String] $DestinationPath
     )
+    # The PowerShell < 5 fallback below empties the destination before
+    # extracting, so a ZIP staged inside the directory it extracts to is deleted
+    # before it can be read. Refuse rather than fail obscurely on exactly the
+    # old PowerShell versions the fallback exists for.
+    if ($Path.StartsWith($DestinationPath, [System.StringComparison]::OrdinalIgnoreCase))
+    {
+        throw "Refusing to extract $( $Path ) into $( $DestinationPath ): the archive is inside its own destination."
+    }
     if (Get-Command Expand-Archive -errorAction SilentlyContinue)
     {
         Expand-Archive -Path $Path -DestinationPath $DestinationPath -force
@@ -526,14 +564,27 @@ function Confirm-ReleaseChecksum
     Param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string]$AssetName,
-        [Parameter(Mandatory = $true)][string]$Tag
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$StagingDir
     )
     $sumsUrl = "https://github.com/proximile/proxiport/releases/download/$( $Tag )/checksums.txt"
     Write-Information "* Verifying checksum against $( $sumsUrl )"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     # Download to a file (rather than into memory) so cosign can verify the exact
     # signed bytes.
-    $sumsFile = Join-Path $Env:TEMP "proxiport-checksums.txt"
+    # Not $Env:TEMP: as SYSTEM that is C:\Windows\Temp, where any local user
+    # can pre-create this file and keep ownership of it (Invoke-WebRequest
+    # -OutFile truncates rather than recreates, so the attacker's DACL
+    # survives). This file is the integrity input the checksum is read from, so
+    # it has to be somewhere only SYSTEM and Administrators can write.
+    $sumsFile = Join-Path $StagingDir "proxiport-checksums.txt"
+    foreach ($stale in @($sumsFile, "$( $sumsFile ).sig", "$( $sumsFile ).pem"))
+    {
+        if (Test-Path $stale)
+        {
+            Remove-Item $stale -Force -Recurse
+        }
+    }
     try
     {
         Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -OutFile $sumsFile
@@ -572,6 +623,8 @@ function Confirm-ReleaseChecksum
 function Invoke-Download
 {
     Param(
+        [Parameter(Mandatory = $true)]
+        [string]$StagingDir,
         [Parameter()]
         [string]$gt = "0",
         [string]$pkgUrl
@@ -585,13 +638,17 @@ function Invoke-Download
     if ($pkgUrl)
     {
         # Download from a custom URL given by global switch
-        if ($pkgUrl -match ("^http.*windows_x86_64.zip"))
+        # https only. A custom package URL is not checksum-verified (there are
+        # no published checksums for it), so the transport is the only thing
+        # standing between this and running an attacker's binary as the service
+        # account.
+        if ($pkgUrl -match ("^https://.*windows_x86_64\.zip$"))
         {
-            $downloadFile = "C:\Windows\temp\proxiport_windows_x86_64.zip"
+            $downloadFile = Join-Path $StagingDir 'proxiport_windows_x86_64.zip'
         }
         else
         {
-            Write-Error "PkgUrl $( $pkgUrl ) is not a valid proxiport download url."
+            throw "PkgUrl $( $pkgUrl ) is not a valid proxiport download url: it must be an https:// URL ending in windows_x86_64.zip."
         }
         $url = $pkgUrl
         if ($env:PROXIPORT_INSTALLER_DL_USERNAME -and $env:PROXIPORT_INSTALLER_DL_PASSWORD)
@@ -615,19 +672,21 @@ function Invoke-Download
         {
             # Already on the latest version: hand back an empty file,
             # which callers treat as "no update needed".
-            $downloadFile = "C:\Windows\temp\proxiport-up-to-date.zip"
+            $downloadFile = Join-Path $StagingDir 'proxiport-up-to-date.zip'
             New-Item -ItemType File -Force -Path $downloadFile | Out-Null
             return $downloadFile
         }
         $assetName = "proxiport_$( $version )_windows_x86_64.zip"
-        $downloadFile = "C:\Windows\temp\$( $assetName )"
+        $downloadFile = Join-Path $StagingDir $assetName
         $url = "https://github.com/proximile/proxiport/releases/download/$( $tag )/$( $assetName )"
         $releaseTag = $tag
     }
 
-    if (Test-Path $downloadFile -PathType leaf)
+    # -PathType leaf missed a plant that is a directory, which then made
+    # Invoke-WebRequest fail and aborted the whole install.
+    if (Test-Path $downloadFile)
     {
-        Remove-Item $downloadFile -Force
+        Remove-Item $downloadFile -Force -Recurse
     }
     Write-Information "* Downloading  $( $url )."
     $ProgressPreference = 'SilentlyContinue'
@@ -636,7 +695,7 @@ function Invoke-Download
     if ($releaseTag -and $assetName)
     {
         # Verify the release download before any caller extracts/runs it.
-        Confirm-ReleaseChecksum -FilePath $downloadFile -AssetName $assetName -Tag $releaseTag
+        Confirm-ReleaseChecksum -FilePath $downloadFile -AssetName $assetName -Tag $releaseTag -StagingDir $StagingDir
     }
     return $downloadFile
 }
@@ -679,6 +738,14 @@ function New-PSScriptFile
         [Parameter(Mandatory = $true)]
         [string] $ScriptBlock
     )
+    # Out-File -Append into a path that already exists would add to whatever is
+    # there rather than replace it, so a pre-created file becomes a prefix of
+    # the script that runs.
+    if (Test-Path $Path)
+    {
+        throw "Refusing to write $( $Path ): it already exists."
+    }
+    New-Item -ItemType File -Path $Path -ErrorAction Stop | Out-Null
     $ScriptBlock.Split("`n") | ForEach-Object {
         if ($_)
         {
