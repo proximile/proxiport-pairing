@@ -106,8 +106,23 @@ try
         $target = Join-Path $OutDir $fetch.File
         $response = Invoke-WebRequest -Uri "$base$( $fetch.Path )" -UseBasicParsing -UserAgent $ua -TimeoutSec 10
         # -OutFile would be simpler but writes with a BOM on Windows PowerShell,
-        # which changes the bytes the parser sees.
-        [System.IO.File]::WriteAllBytes($target, $response.Content)
+        # which changes the bytes the parser sees. RawContentStream is the bytes
+        # exactly as served; Windows PowerShell hands back .Content as a string
+        # for text media types, so it cannot be written directly.
+        $rawStream = $response.PSObject.Properties['RawContentStream']
+        if ($rawStream -and $rawStream.Value)
+        {
+            $bytes = $rawStream.Value.ToArray()
+        }
+        elseif ($response.Content -is [byte[]])
+        {
+            $bytes = $response.Content
+        }
+        else
+        {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$response.Content)
+        }
+        [System.IO.File]::WriteAllBytes($target, $bytes)
         Write-Host ("Rendered {0,-16} -> {1} ({2} bytes)" -f $fetch.Path, $fetch.File, (Get-Item $target).Length)
     }
 }
