@@ -41,7 +41,7 @@ if ($LASTEXITCODE -ne 0)
 # installer can be rendered without performing a deposit first; the values are
 # placeholders and never leave this runner.
 $conf = Join-Path $workDir 'pairing.conf'
-@"
+$confText = @"
 [server]
   address = "127.0.0.1:$Port"
   url = "http://127.0.0.1:$Port"
@@ -52,7 +52,10 @@ $conf = Join-Path $workDir 'pairing.conf'
   fingerprint = "2a:c4:79:04:80:ba:7c:60:05:e5:2c:49:6d:74:56:24"
   client_id = "render-only"
   password = "render-only"
-"@ | Set-Content -Path $conf -Encoding UTF8
+"@
+# Windows PowerShell's UTF8 encoding writes a byte order mark, and the TOML
+# parser reads it as part of the first key.
+[System.IO.File]::WriteAllText($conf, $confText, (New-Object System.Text.UTF8Encoding $false))
 
 $proc = Start-Process -FilePath $exe -ArgumentList @('-c', $conf) -PassThru -NoNewWindow `
     -RedirectStandardOutput (Join-Path $workDir 'service.out') `
@@ -76,7 +79,11 @@ try
         {
             if ($proc.HasExited)
             {
-                Get-Content (Join-Path $workDir 'service.err') -ErrorAction SilentlyContinue | Write-Host
+                foreach ($log in @('service.out', 'service.err'))
+                {
+                    Get-Content (Join-Path $workDir $log) -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  [$log] $_" }
+                }
+                $proc.Refresh()
                 throw "the pairing service exited before it began listening (exit code $( $proc.ExitCode ))"
             }
             Start-Sleep -Milliseconds 250
