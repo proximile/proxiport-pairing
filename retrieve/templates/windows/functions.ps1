@@ -480,7 +480,7 @@ function Get-LatestReleaseTag
 # (goreleaser) for every release.
 # Best-effort Sigstore verification of checksums.txt. When cosign is present it
 # verifies the release's keyless signature over checksums.txt against the pinned
-# signing identity, throwing on failure — this is what defends against a
+# signing identity, throwing on failure -- this is what defends against a
 # same-channel attacker who can rewrite both the artifact and checksums.txt. When
 # cosign is absent it warns and returns, leaving only the SHA-256 check.
 function Confirm-ReleaseSignature
@@ -491,7 +491,7 @@ function Confirm-ReleaseSignature
     )
     if (-not (Get-Command cosign -ErrorAction SilentlyContinue))
     {
-        Write-Warning "cosign not found — the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification."
+        Write-Warning "cosign not found -- the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification."
         return
     }
     Write-Information "* Verifying release signature with cosign"
@@ -506,7 +506,7 @@ function Confirm-ReleaseSignature
     }
     catch
     {
-        throw "cosign is installed but the release signature/certificate could not be downloaded — refusing to install."
+        throw "cosign is installed but the release signature/certificate could not be downloaded -- refusing to install."
     }
     & cosign verify-blob `
         --certificate $pemFile `
@@ -516,7 +516,7 @@ function Confirm-ReleaseSignature
         $ChecksumsFile 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0)
     {
-        throw "cosign signature verification failed for checksums.txt — refusing to install a possibly-tampered release."
+        throw "cosign signature verification failed for checksums.txt -- refusing to install a possibly-tampered release."
     }
     Write-Information "* Signature OK (cosign)"
 }
@@ -540,7 +540,7 @@ function Confirm-ReleaseChecksum
     }
     catch
     {
-        throw "Could not download checksums.txt — refusing to install an unverified binary."
+        throw "Could not download checksums.txt -- refusing to install an unverified binary."
     }
 
     Confirm-ReleaseSignature -Tag $Tag -ChecksumsFile $sumsFile
@@ -558,7 +558,7 @@ function Confirm-ReleaseChecksum
     }
     if (-not $expected)
     {
-        throw "No checksum listed for $( $AssetName ) — refusing to install an unverified binary."
+        throw "No checksum listed for $( $AssetName ) -- refusing to install an unverified binary."
     }
 
     $actual = (Get-FileHash -Algorithm SHA256 -Path $FilePath).Hash.ToLower()
