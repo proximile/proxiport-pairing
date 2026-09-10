@@ -152,6 +152,28 @@ iwr "http://127.0.0.1:9090/0000000" -OutFile install.ps1
 Invoke-ScriptAnalyzer -Path install.ps1
 ```
 
+### Windows templates must be ASCII
+
+Nothing under `retrieve/templates/windows/` may contain a non-ASCII
+character. `go test ./retrieve/` enforces this, and the failure it
+reports names the character and the line.
+
+The reason is that Windows hosts save the script with
+`Invoke-WebRequest -OutFile` and then run it with `powershell -File`.
+Windows PowerShell decodes a file that carries no byte order mark using
+the system ANSI codepage rather than UTF-8, and these scripts are served
+without one. On the Western codepage that most Windows installs use, the
+three bytes of a UTF-8 em dash decode to three separate characters, the
+last of which is a right curly quote — and PowerShell accepts curly
+quotes as string delimiters. An em dash inside a double-quoted string
+therefore closes it early, the words after it become bare tokens, and the
+script stops parsing altogether.
+
+It is not a display problem. A script that reads perfectly well in an
+editor can fail to load on the host it was written for, so keep the
+punctuation plain: `--` rather than an em dash, `"` rather than a curly
+quote.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Sensitive disclosures: see
