@@ -1,0 +1,46 @@
+name: Windows Scripts
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Least privilege: the job only needs to read the checkout.
+permissions:
+  contents: read
+
+jobs:
+  windows-scripts:
+    name: Windows Scripts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.8'
+
+      # The client scripts are assembled per request and selected by user agent,
+      # so they are fetched from a locally started service rather than read off
+      # disk: that is the only form a Windows host ever sees.
+      - name: Render the client scripts
+        shell: powershell
+        run: .\.github\scripts\Get-RenderedScripts.ps1 -OutDir "${{ runner.temp }}\rendered"
+
+      # "powershell" is Windows PowerShell 5.1, which is what the scripts run
+      # under on a real host. "pwsh" would be PowerShell 7 and would not
+      # exercise the same parser or the same cmdlet behaviour.
+      - name: Check the rendered scripts
+        shell: powershell
+        run: .\.github\scripts\Test-WindowsScripts.ps1 -ScriptDir "${{ runner.temp }}\rendered"
+
+      # Kept on failure so a broken render can be inspected without a rerun.
+      - name: Upload the rendered scripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-windows-scripts
+          path: ${{ runner.temp }}\rendered
+          if-no-files-found: warn
