@@ -214,33 +214,106 @@ ${USER} ALL=(ALL) NOPASSWD:ALL
 #----------------------------------------------------------------------------------------------------------------------
 create_sudoers_updates() {
   SUDOERS_FILE=/etc/sudoers.d/proxiport-update-status
-  if [ -e "$SUDOERS_FILE" ]; then
-    throw_info "You already have a $SUDOERS_FILE. Not changing."
+  SUDOERS_TMP="${SUDOERS_FILE}.tmp"
+
+  if ! has_sudo; then
     return 0
   fi
 
-  if has_sudo; then
-    echo '#
-# This file has been auto-generated during the installation of the proxiport client.
-# Change to your needs.
-#' >$SUDOERS_FILE
-    if is_available apt-get; then
-      echo "${USER} ALL=NOPASSWD: SETENV: /usr/bin/apt-get update -o Debug\:\:NoLocking=true" >>$SUDOERS_FILE
+  if [ -e "$SUDOERS_FILE" ]; then
+    if has_unsafe_update_rule "$SUDOERS_FILE"; then
+      # Earlier versions of this installer wrote "SETENV:" into this file.
+      # SETENV lets the caller put any environment on the sudo command line,
+      # and a package manager will read its configuration from a file named by
+      # the environment -- apt from APT_CONFIG, zypper from ZYPP_CONF -- and a
+      # package-manager config can run commands. That made the rule a root
+      # shell for the ${USER} account on every host it was written to.
+      #
+      # Rewriting is the whole point: the fix only reaches an already-installed
+      # host through this function, so skipping because the file exists would
+      # leave the rule in place forever.
+      throw_warning "Replacing a root-equivalent SETENV rule in $SUDOERS_FILE."
+    else
+      throw_info "You already have a $SUDOERS_FILE. Not changing."
+      return 0
     fi
-    #if is_available yum;then
-    #  echo 'proxiport ALL=NOPASSWD: SETENV: /usr/bin/yum *'>>$SUDOERS_FILE
-    #fi
-    #if is_available dnf;then
-    #  echo 'proxiport ALL=NOPASSWD: SETENV: /usr/bin/dnf *'>>$SUDOERS_FILE
-    #fi
-    if is_available zypper; then
-      echo "${USER} ALL=NOPASSWD: SETENV: /usr/bin/zypper refresh *" >>$SUDOERS_FILE
-    fi
-    #if is_available apk;then
-    #  echo 'proxiport ALL=NOPASSWD: SETENV: /sbin/apk *'>>$SUDOERS_FILE
-    #fi
-    echo "A $SUDOERS_FILE has been created. Please review and change to your needs."
   fi
+
+  # Build the file somewhere sudo ignores and move it into place. A file in
+  # /etc/sudoers.d that does not parse makes sudo refuse to run for every user
+  # including root, so a partly written one must never be visible: the old
+  # write-header-then-append-rules sequence had a window where it was. sudo
+  # skips any name containing a dot, so the .tmp suffix is inert.
+  rm -f "$SUDOERS_TMP"
+  {
+    echo '#'
+    echo '# This file has been auto-generated during the installation of the proxiport client.'
+    echo '# Change to your needs.'
+    echo '#'
+    echo '# Each rule names the exact command the proxiport client runs, with no'
+    echo '# wildcard and no SETENV. Both matter:'
+    echo '#'
+    echo '#   SETENV: lets the caller set any environment on the sudo command line,'
+    echo '#   and a package manager reads its configuration from a file named by the'
+    echo '#   environment (apt: APT_CONFIG, zypper: ZYPP_CONF). A package-manager'
+    echo '#   config can run commands, so SETENV: on any package-manager rule is a'
+    echo '#   root shell for this account.'
+    echo '#'
+    echo '#   A wildcard in the arguments is not one argument. sudo matches the'
+    echo '#   command line as a single concatenated string, so one * spans several'
+    echo '#   arguments and the spaces between them.'
+    if is_available apt-get; then
+      echo "${USER} ALL=NOPASSWD: /usr/bin/apt-get update -o Debug\:\:NoLocking=true"
+    fi
+    if is_available zypper; then
+      echo "${USER} ALL=NOPASSWD: /usr/bin/zypper refresh"
+    fi
+  } >"$SUDOERS_TMP"
+  chmod 0440 "$SUDOERS_TMP"
+
+  if ! check_sudoers_file "$SUDOERS_TMP"; then
+    rm -f "$SUDOERS_TMP"
+    throw_warning "Generated sudoers rules did not parse. No update-status sudo rules installed."
+    return 0
+  fi
+
+  mv "$SUDOERS_TMP" "$SUDOERS_FILE"
+  echo "A $SUDOERS_FILE has been created. Please review and change to your needs."
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  has_unsafe_update_rule
+#   DESCRIPTION:  true if the given sudoers file has a live rule this installer must replace
+#----------------------------------------------------------------------------------------------------------------------
+has_unsafe_update_rule() {
+  # "^[^#]*" so a rule an operator commented out is left commented: regenerating
+  # over the top of a deliberate opt-out would silently hand the grant back.
+  if grep -Eq '^[^#]*SETENV' "$1"; then
+    return 0
+  fi
+  # The old zypper rule also carried a trailing wildcard.
+  if grep -Eq '^[^#]*zypper refresh[[:space:]]+\*' "$1"; then
+    return 0
+  fi
+  return 1
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  check_sudoers_file
+#   DESCRIPTION:  validate a sudoers fragment with visudo, if visudo is present
+#----------------------------------------------------------------------------------------------------------------------
+check_sudoers_file() {
+  # visudo lives in /usr/sbin, which is on root's PATH on every distribution
+  # this installer supports -- but check the path too rather than skipping
+  # validation because PATH is unusual.
+  VISUDO=$(command -v visudo 2>/dev/null || true)
+  if [ -z "$VISUDO" ] && [ -x /usr/sbin/visudo ]; then
+    VISUDO=/usr/sbin/visudo
+  fi
+  if [ -z "$VISUDO" ]; then
+    return 0
+  fi
+  "$VISUDO" -cf "$1" >/dev/null
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
