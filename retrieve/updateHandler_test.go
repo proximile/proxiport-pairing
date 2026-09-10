@@ -50,3 +50,20 @@ func TestUpdateHandler_ServeHTTP(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateHandler_CacheHeaders pins the two directives the update route needs.
+// no-store because /update is how an agent-side security fix reaches an
+// already-deployed fleet -- a cached copy delays the fix. Vary because the body
+// is picked by User-Agent, so a URL-keyed cache would serve a PowerShell agent
+// the shell script.
+func TestUpdateHandler_CacheHeaders(t *testing.T) {
+	for _, ua := range []string{"curl/7.79.1", "Mozilla/5.0 PowerShell/7.4.0"} {
+		req, _ := http.NewRequest(http.MethodGet, "/update", nil)
+		req.Header.Set("User-Agent", ua)
+		rec := httptest.NewRecorder()
+		(&retrieve.UpdateHandler{}).ServeHTTP(rec, req)
+
+		assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"), ua)
+		assert.Equal(t, "User-Agent", rec.Header().Get("Vary"), ua)
+	}
+}

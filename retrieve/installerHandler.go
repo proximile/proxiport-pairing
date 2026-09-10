@@ -4,47 +4,27 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"net/http"
-	"sync"
 
 	"github.com/gorilla/mux"
-	"github.com/patrickmn/go-cache"
 
 	"github.com/proximile/proxiport-pairing/deposit"
+	"github.com/proximile/proxiport-pairing/internal/cache"
 )
 
 type InstallerHandler struct {
 	StaticDeposit deposit.Deposit
 	Cache         *cache.Cache
-
-	// popMu makes the single-use burn atomic. go-cache has no
-	// compare-and-delete, so Get-then-Delete is two operations: N concurrent
-	// requests for one code each observe the entry and each receive a rendered
-	// installer carrying the live agent credential. That matters because the
-	// burn is the only thing that makes a stolen code visible -- a pairing code
-	// travels in a URL path, so it lands in proxy logs, shell history and chat
-	// pastes, and "No pairing found" on the real install is the operator's one
-	// signal that someone else got there first. Redeeming alongside the
-	// legitimate install leaves no trace at all.
-	//
-	// Serializing the pair costs nothing here: this is a provisioning endpoint
-	// fetched once per agent.
-	popMu sync.Mutex
 }
 
-// pop returns the deposit stored under a pairing code and removes it in the
-// same critical section, so a code is redeemable exactly once even when
-// several requests for it arrive at once.
-func (rh *InstallerHandler) pop(pairingCode string) (dep deposit.Deposit, found bool) {
-	rh.popMu.Lock()
-	defer rh.popMu.Unlock()
-
-	val, ok := rh.Cache.Get(pairingCode)
+// pop takes the deposit for a pairing code out of the store, burning the code.
+// The store does the burn atomically; see internal/cache for why that matters.
+func (rh *InstallerHandler) pop(pairingCode string) (deposit.Deposit, bool) {
+	val, ok := rh.Cache.Pop(pairingCode)
 	if !ok {
 		return deposit.Deposit{}, false
 	}
-	rh.Cache.Delete(pairingCode)
 
-	dep, ok = val.(deposit.Deposit)
+	dep, ok := val.(deposit.Deposit)
 	return dep, ok
 }
 
@@ -75,9 +55,8 @@ func (rh *InstallerHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	} else {
 		// Single-use: a rendered installer carries live credentials, so a
 		// pairing code must not stay replayable for the rest of its TTL. pop
-		// takes and burns it in one critical section. (The static/config
-		// deposit above is intentionally reusable and is never cached, so it is
-		// unaffected.)
+		// takes and burns it in one operation. (The static/config deposit above
+		// is intentionally reusable and is never stored, so it is unaffected.)
 		found := false
 		data, found = rh.pop(pairingCode)
 		if !found {
