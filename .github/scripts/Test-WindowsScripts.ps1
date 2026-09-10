@@ -52,14 +52,14 @@ function Assert-That
     if ($Condition)
     {
         Write-Host "  GATE  pass  $Name"
-        $script:Summary.Add("- **GATE pass** — $Name")
+        $script:Summary.Add("- **GATE pass** -- $Name")
     }
     else
     {
         Write-Host "  GATE  FAIL  $Name"
         if ($Detail) { Write-Host "              $Detail" }
         $script:Failures += "$Name$( if ($Detail) { " -- $Detail" } )"
-        $script:Summary.Add("- **GATE FAIL** — $Name$( if ($Detail) { " ($Detail)" } )")
+        $script:Summary.Add("- **GATE FAIL** -- $Name$( if ($Detail) { " ($Detail)" } )")
     }
 }
 
@@ -70,7 +70,7 @@ function Write-Measured
         [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Value
     )
     Write-Host "  MEAS        $Name = $Value"
-    $script:Summary.Add("- MEASURED — ${Name}: ``$Value``")
+    $script:Summary.Add("- MEASURED -- ${Name}: ``$Value``")
 }
 
 function Invoke-Native
@@ -373,6 +373,39 @@ if ($taskFileMatch.Success)
 }
 
 Remove-Item -LiteralPath $taskSandbox -Recurse -Force -ErrorAction SilentlyContinue
+
+
+# ---------------------------------------------------------------------------
+Write-Section "Scripts load the way a host runs them"
+# The documented Windows flow saves the script with -OutFile and then runs it
+# with -File. Windows PowerShell decodes a file that carries no byte order mark
+# using the system ANSI codepage, so a script that is perfectly good UTF-8 can
+# still fail to load once it is on disk -- and parsing the file in-process does
+# not necessarily go through the same decoding. Load it the way a host does.
+
+foreach ($file in @('update.ps1'))
+{
+    $path = Join-Path $ScriptDir $file
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $nonAscii = 0
+    foreach ($b in $bytes) { if ($b -gt 0x7F) { $nonAscii++ } }
+    Write-Measured -Name "$file carries a byte order mark" -Value $hasBom
+    Write-Measured -Name "$file non-ASCII bytes" -Value $nonAscii
+
+    # -h prints the usage text and exits before the script touches anything.
+    $probeOutput = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $path -h }
+    $probeExit = $LASTEXITCODE
+    $loaded = ($probeExit -eq 0)
+    Write-Measured -Name "$file loads from disk and prints usage" -Value $loaded
+    if (-not $loaded)
+    {
+        Write-Host "  script did not load; first lines of output:"
+        $probeOutput | Select-Object -First 12 | ForEach-Object { Write-Host "    $_" }
+        $script:Summary.Add("")
+        $script:Summary.Add("> ``$file`` does not load when saved to disk and run with -File, which is the documented flow.")
+    }
+}
 
 
 # ---------------------------------------------------------------------------
