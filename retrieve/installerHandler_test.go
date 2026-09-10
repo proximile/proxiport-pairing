@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -209,6 +210,110 @@ func TestInstallerHandler_VerificationIsFresh(t *testing.T) {
 	assert.Contains(t, body, `rm -f "$LOG_FILE"`, "installer no longer clears the stale log before the first start")
 	// check_log recognizes the current server rejection so the machine-id auto-recovery fires.
 	assert.Contains(t, body, "client is already connected", "check_log no longer matches the current 'already connected' server message")
+}
+
+// TestInstallerHandler_ResponseIsNotCacheable asserts the installer response
+// forbids caching. The body carries a live agent credential and the pairing code
+// is single-use, so an intermediary that retains it can re-serve a burned code
+// -- which defeats the burn entirely. The 404 is covered too: it still tells a
+// cache which codes exist.
+func TestInstallerHandler_ResponseIsNotCacheable(t *testing.T) {
+	c := cache.New()
+	dep := deposit.Deposit{
+		ConnectUrl:  "https://proxiport.example.com",
+		Fingerprint: "2a:c1:71:09:80:ba:7c:10:05:e5:2c:99:6d:15:56:24",
+		ClientId:    "client1",
+		Password:    "foobaz",
+		Code:        "STATIC7",
+	}
+	c.Set("CACHED1", dep, 10*time.Second)
+	h := &retrieve.InstallerHandler{StaticDeposit: dep, Cache: c}
+
+	for _, code := range []string{"CACHED1", "STATIC7", "MISSING"} {
+		t.Run(code, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/"+code, nil)
+			req = mux.SetURLVars(req, map[string]string{"pairingCode": code})
+			req.Header.Set("User-Agent", "curl/7.79.1")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			assert.Contains(t, rec.Header().Get("Cache-Control"), "no-store",
+				"credential-bearing installer response must not be storable")
+			assert.Equal(t, "no-cache", rec.Header().Get("Pragma"))
+			assert.Equal(t, "0", rec.Header().Get("Expires"))
+			// The rendered body differs by User-Agent, so a URL-keyed cache
+			// would otherwise serve a Linux installer to a Windows agent.
+			assert.Equal(t, "User-Agent", rec.Header().Get("Vary"))
+		})
+	}
+}
+
+// TestInstallerHandler_ConcurrentFetchesBurnOnce asserts the single-use burn
+// holds under concurrency. Get-then-Delete is two operations, so N simultaneous
+// requests for one code used to each observe the entry and each get a rendered
+// installer with the live credential -- and because the legitimate install still
+// succeeded, the operator saw a normal enrollment and never rotated. Exactly one
+// request may win.
+//
+// The window between the Get and the Delete is two map operations wide, so a
+// single round of racers reproduces the old bug only about one run in eight.
+// Hence the rounds: with the burn unguarded this fails essentially every time,
+// which is what makes it a regression test rather than a coin flip. Run under
+// -race (CI does).
+func TestInstallerHandler_ConcurrentFetchesBurnOnce(t *testing.T) {
+	const (
+		rounds = 50
+		racers = 64
+	)
+
+	dep := deposit.Deposit{
+		ConnectUrl:  "https://proxiport.example.com",
+		Fingerprint: "2a:c1:71:09:80:ba:7c:10:05:e5:2c:99:6d:15:56:24",
+		ClientId:    "client1",
+		Password:    "foobaz",
+	}
+
+	for round := 0; round < rounds; round++ {
+		c := cache.New()
+		c.Set("CACHED1", dep, time.Minute)
+		// No static deposit: a configured one is deliberately reusable and
+		// would mask the burn.
+		h := &retrieve.InstallerHandler{Cache: c}
+
+		var start sync.WaitGroup
+		var done sync.WaitGroup
+		start.Add(1)
+		codes := make([]int, racers)
+		for i := range codes {
+			done.Add(1)
+			go func(i int) {
+				defer done.Done()
+				req, _ := http.NewRequest(http.MethodGet, "/CACHED1", nil)
+				req = mux.SetURLVars(req, map[string]string{"pairingCode": "CACHED1"})
+				req.Header.Set("User-Agent", "curl/7.79.1")
+				rec := httptest.NewRecorder()
+				start.Wait()
+				h.ServeHTTP(rec, req)
+				codes[i] = rec.Result().StatusCode
+			}(i)
+		}
+		start.Done()
+		done.Wait()
+
+		served := 0
+		for _, code := range codes {
+			switch code {
+			case http.StatusOK:
+				served++
+			case http.StatusNotFound:
+			default:
+				t.Fatalf("round %d: unexpected status %d", round, code)
+			}
+		}
+		if served != 1 {
+			t.Fatalf("round %d: pairing code served %d times; a code must be redeemable exactly once, even concurrently", round, served)
+		}
+	}
 }
 
 // TestInstallerHandler_SudoersRulesArePinned guards the sudo rules the installer
