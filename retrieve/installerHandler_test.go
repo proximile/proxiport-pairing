@@ -210,3 +210,71 @@ func TestInstallerHandler_VerificationIsFresh(t *testing.T) {
 	// check_log recognizes the current server rejection so the machine-id auto-recovery fires.
 	assert.Contains(t, body, "client is already connected", "check_log no longer matches the current 'already connected' server message")
 }
+
+// TestInstallerHandler_SudoersRulesArePinned guards the sudo rules the installer
+// writes to /etc/sudoers.d/proxiport-update-status.
+//
+// SETENV: lets the caller put any environment on the sudo command line, and a
+// package manager reads its configuration from a file named by the environment
+// (apt: APT_CONFIG, zypper: ZYPP_CONF). A package-manager config can run
+// commands, so SETENV: on a package-manager rule is a root shell for the agent
+// account -- on every host the installer ever touched.
+//
+// A trailing wildcard is the same class of mistake: sudo matches the command
+// line as one concatenated string, so a single * spans several arguments and
+// the spaces between them. `zypper refresh *` granted arbitrary appended
+// arguments to a root zypper, and -- because * needs at least one argument --
+// did not even match the agent's own argument-free `zypper refresh`.
+//
+// The rules must name exactly what client/updates runs, and nothing else. The
+// shell templates have no linting in CI, so this test is the guard.
+func TestInstallerHandler_SudoersRulesArePinned(t *testing.T) {
+	body := renderLinuxInstaller(t)
+
+	// Scan the lines that emit a rule, not the whole body: the generated file's
+	// own header explains why SETENV must never be added, so the word appears
+	// legitimately in comments.
+	for _, line := range strings.Split(body, "\n") {
+		rule := strings.TrimSpace(line)
+		if strings.HasPrefix(rule, "#") || !strings.Contains(rule, "NOPASSWD") {
+			continue
+		}
+		assert.NotContains(t, rule, "SETENV",
+			"sudoers rule grants SETENV, which is a root shell for the agent account: %s", rule)
+	}
+
+	assert.NotContains(t, body, "zypper refresh *",
+		"a trailing wildcard spans arguments; pin the rule to the exact command the agent runs")
+
+	// The exact argv from client/updates/apt.go and client/updates/zypper.go.
+	assert.Contains(t, body, `ALL=NOPASSWD: /usr/bin/apt-get update -o Debug\:\:NoLocking=true`)
+	assert.Contains(t, body, "ALL=NOPASSWD: /usr/bin/zypper refresh\"")
+
+	// A host that already carries the old rule only ever gets it replaced
+	// through this installer, so the rewrite path must be present.
+	assert.Contains(t, body, "has_unsafe_update_rule",
+		"installer must replace an existing SETENV rule, not skip because the file exists")
+	assert.Contains(t, body, "check_sudoers_file",
+		"a sudoers fragment that does not parse makes sudo fail closed for every user")
+}
+
+func renderLinuxInstaller(t *testing.T) string {
+	t.Helper()
+
+	dep := deposit.Deposit{
+		ConnectUrl:  "https://proxiport.example.com",
+		Fingerprint: "2a:c1:71:09:80:ba:7c:10:05:e5:2c:99:6d:15:56:24",
+		ClientId:    "client1",
+		Password:    "foobaz",
+		Code:        "cZ1ZhsG",
+	}
+	h := &retrieve.InstallerHandler{StaticDeposit: dep, Cache: cache.New()}
+
+	req, _ := http.NewRequest(http.MethodGet, "/cZ1ZhsG", nil)
+	req.Header.Set("User-Agent", "curl/7.79.1")
+	req = mux.SetURLVars(req, map[string]string{"pairingCode": "cZ1ZhsG"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	return rec.Body.String()
+}
