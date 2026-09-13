@@ -250,9 +250,15 @@ Assert-That -Name "unprivileged users cannot create files in $programFiles" `
 
 
 # ---------------------------------------------------------------------------
-Write-Section "Update staging leaves the binary the restart task installs"
-# Drives the updater's own extract-and-stage block, taken out of the rendered
-# script rather than restated here, so this cannot drift from what ships.
+Write-Section "Update staging leaves a binary for the restart task to install"
+# Drives the updater's own extract-and-stage sequence, taken out of the rendered
+# script through its syntax tree rather than restated here, so this cannot drift
+# from what ships.
+#
+# The sequence is the run of statements from the Expand-Zip call to the end of
+# the block containing it, stopping at the first function definition. That
+# identifies it whether the staging code sits inside a branch or at the top
+# level, so the check survives the surrounding script being reorganised.
 
 $updateBody = Get-RenderedSection -Content $rendered['update.ps1'] -Section 'templates/windows/update.ps1'
 $functionsBody = Get-RenderedSection -Content $rendered['update.ps1'] -Section 'templates/windows/functions.ps1'
@@ -260,43 +266,64 @@ $functionsBody = Get-RenderedSection -Content $rendered['update.ps1'] -Section '
 $errors = $null
 $updateAst = [System.Management.Automation.Language.Parser]::ParseInput($updateBody, [ref]$null, [ref]$errors)
 
-$stagingIf = $updateAst.FindAll({
+$expandCall = $updateAst.FindAll({
     param($node)
-    $node -is [System.Management.Automation.Language.IfStatementAst] -and
-    $node.Clauses[0].Item1.Extent.Text -match 'isMsiInstallation'
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq 'Expand-Zip'
 }, $true) | Select-Object -First 1
 
-if (-not $stagingIf -or -not $stagingIf.ElseClause)
+if (-not $expandCall)
 {
-    throw "could not locate the update staging branch in the rendered update script"
+    throw "could not find the Expand-Zip call in the rendered update script"
 }
-$stagingBlock = ($stagingIf.ElseClause.Statements | ForEach-Object { $_.Extent.Text }) -join "`n"
+
+# Walk out to the statement the call belongs to, then to the block holding it.
+$stagingStatement = $expandCall
+while ($stagingStatement.Parent -and -not ($stagingStatement.Parent -is [System.Management.Automation.Language.StatementBlockAst] -or
+                                            $stagingStatement.Parent -is [System.Management.Automation.Language.NamedBlockAst]))
+{
+    $stagingStatement = $stagingStatement.Parent
+}
+$stagingBlockAst = $stagingStatement.Parent
+$statements = @($stagingBlockAst.Statements)
+$firstIndex = [Array]::IndexOf($statements, $stagingStatement)
+
+$stagingStatements = @()
+for ($i = $firstIndex; $i -lt $statements.Count; $i++)
+{
+    if ($statements[$i] -is [System.Management.Automation.Language.FunctionDefinitionAst]) { break }
+    $stagingStatements += $statements[$i]
+}
+$stagingBlock = ($stagingStatements | ForEach-Object { $_.Extent.Text }) -join "`n"
+Write-Host "  extracted $( $stagingStatements.Count ) statement(s) beginning at line $( $stagingStatements[0].Extent.StartLineNumber ) of the update script"
 
 $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("staging-" + [System.Guid]::NewGuid().ToString('N'))
-$staging = Join-Path $sandbox 'proxiport-update'
+$installDir = Join-Path $sandbox 'proxiport'
+$staging = Join-Path $installDir 'update'
 $payload = Join-Path $sandbox 'payload'
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
-# A real console executable, so the version probe in the staging block behaves
-# the way it does against a real release archive.
+# A real console executable, so the version probe behaves as it does against a
+# real release archive.
 Add-Type -TypeDefinition 'public static class Stub { public static void Main() { System.Console.WriteLine("version 9.9.9"); } }' `
     -OutputAssembly (Join-Path $payload 'proxiport.exe') -OutputType ConsoleApplication
 '# placeholder' | Set-Content -Path (Join-Path $payload 'proxiport.example.conf')
 
-$archive = Join-Path $sandbox 'proxiport_9.9.9_Windows_x86_64.zip'
+$archive = Join-Path $installDir 'proxiport_9.9.9_Windows_x86_64.zip'
 Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archive
 
 $funcFile = Join-Path $sandbox 'functions.ps1'
 Set-Content -Path $funcFile -Value $functionsBody -Encoding UTF8
 
-# Mirrors the script's own temp-directory creation, which sits just above the
-# branch under test.
-New-Item -ItemType Directory -Force -Path $staging | Out-Null
-
+# Both the staging directory and the download path are established above the
+# extracted sequence, so supply them under names either version may use.
 $driver = Join-Path $sandbox 'drive-staging.ps1'
 @"
 . '$funcFile'
 `$myLocation = '$sandbox'
+`$installDir = '$installDir'
+`$stagingDir = '$staging'
 `$temp = '$staging\'
 `$downloadFile = '$archive'
 $stagingBlock
@@ -306,30 +333,26 @@ $driverOutput = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -Exe
 $driverExit = $LASTEXITCODE
 $driverOutput | ForEach-Object { Write-Host "    $_" }
 
-Assert-That -Name "the update staging block runs without error" -Condition ($driverExit -eq 0) `
+Assert-That -Name "the update staging sequence runs without error" -Condition ($driverExit -eq 0) `
     -Detail "exit code $driverExit"
 
-$stagedExe = Join-Path $staging 'proxiport.exe'
-$stagedExists = Test-Path -LiteralPath $stagedExe
-
-# The restart task the updater schedules installs from this path. If staging
-# does not leave a binary there, the task stops the service, finds nothing, and
-# starts the old binary again -- the update silently does nothing.
-$taskInstallsFromStaging = $updateBody -match 'proxiport-update\\proxiport\.exe'
-Assert-That -Name "the restart task installs from the staging directory" -Condition $taskInstallsFromStaging
-
-Write-Measured -Name "staged binary present after staging completes" -Value $stagedExists
-Write-Measured -Name "staging directory present after staging completes" -Value (Test-Path -LiteralPath $staging)
-
-if (-not $stagedExists)
+# The restart task installs whatever staging left behind. If staging leaves no
+# binary at all, the task stops the service, finds nothing, and starts the old
+# one again: the update reports success and applies nothing.
+$survivors = @(Get-ChildItem -Path $sandbox -Recurse -Filter 'proxiport*.exe' -ErrorAction SilentlyContinue)
+foreach ($survivor in $survivors)
 {
-    Write-Host ""
-    Write-Host "  NOTE: staging removed the binary that the restart task installs from,"
-    Write-Host "        so an update applies nothing. Measured, not gated, because it"
-    Write-Host "        describes current behaviour rather than intended behaviour."
-    $script:Summary.Add("")
-    $script:Summary.Add("> Staging removed the binary the restart task installs from, so an update applies nothing.")
+    Write-Measured -Name "staged binary" -Value $survivor.FullName.Substring($sandbox.Length).TrimStart('\')
 }
+Write-Measured -Name "staging directory still present" -Value (Test-Path -LiteralPath $staging)
+
+Assert-That -Name "staging leaves a binary for the restart task to install" `
+    -Condition ($survivors.Count -ge 1) `
+    -Detail "no proxiport executable survived the staging sequence"
+
+$taskInstallsFromStaging = $updateBody -match 'proxiport-update\\proxiport\.exe'
+Assert-That -Name "the restart task no longer installs from the world-writable temp directory" `
+    -Condition (-not $taskInstallsFromStaging)
 
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 
