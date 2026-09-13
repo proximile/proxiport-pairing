@@ -65,7 +65,9 @@ func executeAndValidate(t *testing.T, request *http.Request) {
 	err := json.Unmarshal(recorder.Body.Bytes(), &response)
 	require.NoError(t, err)
 	t.Log("Got pairing code ", response.PairingCode)
-	// Assert the returned pairing code equals the one stored in the cache
-	_, ok := c.Get(response.PairingCode)
+	// Assert the returned pairing code equals the one stored in the cache.
+	// Pop is the store's only read: taking the deposit out is what redeeming a
+	// code does, and there is deliberately no Get that leaves it behind.
+	_, ok := c.Pop(response.PairingCode)
 	assert.True(t, ok, "Pairing code not found in cache")
 }
