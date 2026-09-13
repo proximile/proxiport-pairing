@@ -161,6 +161,12 @@ update() {
   check_prerequisites
   cd /tmp
 
+  # Before the version check, not after it. This is the only path by which a
+  # fixed sudoers rule reaches an already-installed host, and the common case
+  # for a fleet is a host that is already on the latest release -- which exits
+  # at "Nothing to do" below and would never reach the block further down.
+  create_sudoers_updates
+
   if [ -n "$PKG_URL" ]; then
       # Update from a user-supplied package URL (-z). No version check.
       abort_on_proxiport_subprocess
@@ -209,7 +215,6 @@ update() {
   fi
   check_scripts
   check_sudo
-  create_sudoers_updates
   detect_interpreters
   enable_monitoring
   enable_lan_monitoring

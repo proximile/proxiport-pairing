@@ -14,6 +14,11 @@ func (rh *UninstallHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 }
 
 func renderUninstall(rw http.ResponseWriter, os string) {
+	// The body is chosen by User-Agent, so a cache keyed on the URL alone would
+	// hand a PowerShell agent the shell script. This response carries no
+	// credential and is otherwise fine to cache.
+	rw.Header().Set("Vary", "User-Agent")
+
 	switch os {
 	case "windows":
 		rw.Header().Add("Content-Disposition", "attachment; filename=\"proxiport-uninstaller.ps1\"")

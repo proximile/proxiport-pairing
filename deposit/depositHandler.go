@@ -13,7 +13,8 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/iancoleman/strcase"
 	gonanoid "github.com/matoous/go-nanoid/v2"
-	"github.com/patrickmn/go-cache"
+
+	"github.com/proximile/proxiport-pairing/internal/cache"
 )
 
 // validate is built once at startup and used read-only. The go-playground
@@ -95,6 +96,9 @@ func (dh *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			rw.Header().Set("Access-Control-Allow-Origin", dh.AllowOrigin)
 		}
 		rw.Header().Set("Content-Type", "application/json")
+		// The body carries the freshly minted pairing code, which is a bearer
+		// capability for a live agent credential until it is redeemed.
+		rw.Header().Set("Cache-Control", "no-store")
 		if _, err := rw.Write(jresponse); err != nil {
 			log.Println("Error ", err)
 		}

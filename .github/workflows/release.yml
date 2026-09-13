@@ -25,12 +25,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.8'
 
       # Gate the release on a call-graph-aware vulnerability scan so a tag can
       # never ship binaries built against a reachable known-vulnerable dep/stdlib.
       - name: govulncheck (dependency vulnerability scan)
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
       # cosign signs the checksums file (keyless); syft generates the SBOMs.
       # Both must be on PATH before goreleaser runs its signs/sboms steps.
