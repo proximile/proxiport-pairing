@@ -166,6 +166,40 @@ Write-Section "Directory rights the update path depends on"
 # property of the running system, not of our code -- so measure it here rather
 # than reasoning about it from documentation.
 
+function Format-Right
+{
+    <#
+        FileSystemRights is a flags enum whose combined values mostly do not map
+        back to a single name, so it prints as a bare signed integer. Several
+        bits also carry two names depending on whether the object is a file or a
+        directory; both are shown because these paths are directories that the
+        update path writes files into.
+    #>
+    param([System.Security.AccessControl.FileSystemRights] $Rights)
+    $bits = [ordered]@{
+        'ListDirectory/ReadData'        = 0x1
+        'CreateFiles/WriteData'         = 0x2
+        'CreateDirectories/AppendData'  = 0x4
+        'ReadExtendedAttributes'        = 0x8
+        'WriteExtendedAttributes'       = 0x10
+        'ExecuteFile/Traverse'          = 0x20
+        'DeleteSubdirectoriesAndFiles'  = 0x40
+        'ReadAttributes'                = 0x80
+        'WriteAttributes'               = 0x100
+        'Delete'                        = 0x10000
+        'ReadPermissions'               = 0x20000
+        'ChangePermissions'             = 0x40000
+        'TakeOwnership'                 = 0x80000
+    }
+    $present = @()
+    foreach ($name in $bits.Keys)
+    {
+        if (([int] $Rights -band $bits[$name]) -eq $bits[$name]) { $present += $name }
+    }
+    if (-not $present) { return '(none)' }
+    return ($present -join ', ')
+}
+
 function Get-AllowedRights
 {
     param([string] $Path, [string] $Identity)
@@ -190,7 +224,7 @@ foreach ($pair in @(@{ Path = $windowsTemp; Label = 'Windows\Temp' }, @{ Path = 
     Write-Host "  icacls $( $pair.Path ):"
     Invoke-Native { & icacls $pair.Path } | ForEach-Object { Write-Host "    $_" }
     $u = Get-AllowedRights -Path $pair.Path -Identity 'BUILTIN\Users'
-    Write-Measured -Name "$( $pair.Label ) BUILTIN\Users rights" -Value $u.Rights
+    Write-Measured -Name "$( $pair.Label ) BUILTIN\Users rights" -Value (Format-Right -Rights $u.Rights)
     Write-Measured -Name "$( $pair.Label ) BUILTIN\Users inheritance" -Value $u.InheritanceFlags
 }
 
