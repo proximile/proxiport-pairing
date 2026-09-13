@@ -165,6 +165,14 @@ Write-Section "Directory rights the update path depends on"
 # another. Whether that is safe depends on who can write to each, which is a
 # property of the running system, not of our code -- so measure it here rather
 # than reasoning about it from documentation.
+#
+# A hosted runner is not a stock install, and its rights can be more permissive
+# than a customer machine's: this one carries an explicit BUILTIN\Users:(F) on
+# the temp directory where a default install grants only (CI)(S,WD,AD,X). The
+# full access control list is printed for exactly that reason. The gates below
+# assert only the direction that matters and that holds either way -- writable
+# staging directory, non-writable install directory -- rather than an exact set
+# of rights that would be reading a census off one machine.
 
 function Format-Right
 {
