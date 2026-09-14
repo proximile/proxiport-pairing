@@ -313,6 +313,11 @@ Add-Type -TypeDefinition 'public static class Stub { public static void Main() {
 $archive = Join-Path $installDir 'proxiport_9.9.9_Windows_x86_64.zip'
 Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archive
 
+# The fixture the archive was built from has to go before anything counts
+# survivors, or it would itself satisfy the check and the gate would pass
+# whatever staging did.
+Remove-Item -LiteralPath $payload -Recurse -Force
+
 $funcFile = Join-Path $sandbox 'functions.ps1'
 Set-Content -Path $funcFile -Value $functionsBody -Encoding UTF8
 
@@ -339,7 +344,9 @@ Assert-That -Name "the update staging sequence runs without error" -Condition ($
 # The restart task installs whatever staging left behind. If staging leaves no
 # binary at all, the task stops the service, finds nothing, and starts the old
 # one again: the update reports success and applies nothing.
-$survivors = @(Get-ChildItem -Path $sandbox -Recurse -Filter 'proxiport*.exe' -ErrorAction SilentlyContinue)
+# Only what is under the install directory counts: that is where the restart
+# task looks, and it excludes anything the harness itself left lying around.
+$survivors = @(Get-ChildItem -Path $installDir -Recurse -Filter 'proxiport*.exe' -ErrorAction SilentlyContinue)
 foreach ($survivor in $survivors)
 {
     Write-Measured -Name "staged binary" -Value $survivor.FullName.Substring($sandbox.Length).TrimStart('\')
