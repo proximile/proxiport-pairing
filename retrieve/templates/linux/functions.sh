@@ -443,18 +443,37 @@ enable_lan_monitoring() {
   for IFACE in /sys/class/net/*; do
     IFACE=$(basename "${IFACE}")
     [ "$IFACE" = 'lo' ] && continue
-    if ip addr show "$IFACE" | grep -E -q "inet (10|192\.168|172\.16)\."; then
-      # Private IP
+    IFACE_INET=$(ip addr show "$IFACE" 2>/dev/null | grep -E -o 'inet [0-9.]+' | head -n1 | cut -d' ' -f2 || true)
+    # An interface with no IPv4 address is neither LAN nor WAN. It used to
+    # fall into the else branch and be recorded as the WAN interface, which
+    # pointed monitoring at a NIC carrying no traffic.
+    [ -z "$IFACE_INET" ] && continue
+    # RFC1918 is 10/8, 172.16/12 and 192.168/16. The 172 range was matched as
+    # the literal "172.16.", so 172.17-172.31 -- which includes the default
+    # docker bridge on 172.17 -- was classified as a public address.
+    if echo "$IFACE_INET" | grep -E -q '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'; then
       NET_LAN="$IFACE"
     else
-      # Public IP
       NET_WAN="$IFACE"
     fi
   done
   # set_toml_key is idempotent (replace-or-insert), so re-running the installer
   # refreshes the interfaces in [monitoring] instead of appending duplicates.
-  [ -n "$NET_LAN" ] && set_toml_key monitoring net_lan "['${NET_LAN}' , '1000' ]"
-  [ -n "$NET_WAN" ] && set_toml_key monitoring net_wan "['${NET_WAN}' , '1000' ]"
+  #
+  # These must not be written as "[ -n "$VAR" ] && set_toml_key ...": install.sh
+  # and update.sh run under `set -e` and call this function bare, and a trailing
+  # AND-OR list whose test fails becomes the function's exit status. On a host
+  # whose every interface is RFC1918 -- a LAN server, a Pi, a NAT'd VM --
+  # NET_WAN is empty, so the installer aborted here, silently, after writing a
+  # config holding a live agent credential but before set_file_and_dir_owner
+  # and create_systemd_service ever ran.
+  if [ -n "$NET_LAN" ]; then
+    set_toml_key monitoring net_lan "['${NET_LAN}' , '1000' ]"
+  fi
+  if [ -n "$NET_WAN" ]; then
+    set_toml_key monitoring net_wan "['${NET_WAN}' , '1000' ]"
+  fi
+  return 0
 }
 
 detect_interpreters() {
