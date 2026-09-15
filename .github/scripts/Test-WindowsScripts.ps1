@@ -482,6 +482,81 @@ foreach ($file in @('update.ps1'))
 
 # ---------------------------------------------------------------------------
 Write-Host ""
+# ---------------------------------------------------------------------------
+Write-Section "A fresh install can extract into its install directory"
+# Everything above drives the UPDATE path. The install path had no gate at all,
+# which is how a guard that refuses every fresh install reached a green run:
+# Expand-Zip refused to extract when the archive sat "inside" its destination,
+# and it decided that with a raw string prefix test. install.ps1 stages in
+# "%ProgramFiles%\proxiport-install-tmp" and extracts into "%ProgramFiles%\proxiport",
+# and the first string does begin with the second -- so the guard fired on a
+# sibling directory and every new Windows agent failed to install.
+#
+# Runs the real Expand-Zip, lifted out of the rendered installer through its
+# syntax tree, against the real pair of paths taken from the same script.
+
+$installerFunctions = Get-RenderedSection -Content $rendered['installer.ps1'] -Section 'templates/windows/functions.ps1'
+
+$expandZipSource = $null
+if ($installerFunctions)
+{
+    $fnAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        ($installerFunctions -join "`n"), [ref]$null, [ref]$null)
+    $expandZipSource = $fnAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Expand-Zip'
+    }, $true) | Select-Object -First 1
+}
+
+Assert-That -Name "Expand-Zip is defined in the rendered installer" -Condition ($null -ne $expandZipSource)
+
+if ($expandZipSource)
+{
+    . ([scriptblock]::Create($expandZipSource.Extent.Text))
+
+    $installSandbox = Join-Path $Env:TEMP ("install-gate-" + [System.Guid]::NewGuid().ToString('N'))
+    # Mirror the shipped shape exactly: the staging directory is a SIBLING of
+    # the install directory whose name starts with the install directory's.
+    $gateInstallDir = Join-Path $installSandbox 'proxiport'
+    $gateStagingDir = Join-Path $installSandbox 'proxiport-install-tmp'
+    New-Item -ItemType Directory -Path $gateInstallDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $gateStagingDir -Force | Out-Null
+
+    $payloadDir = Join-Path $installSandbox 'payload'
+    New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $payloadDir 'proxiport.exe') -Value 'binary' -Encoding Ascii
+    $gateZip = Join-Path $gateStagingDir 'proxiport_0.0.0_windows_x86_64.zip'
+    Compress-Archive -Path (Join-Path $payloadDir '*') -DestinationPath $gateZip -Force
+
+    Write-Measured -Name "archive staged at" -Value $gateZip
+    Write-Measured -Name "extracting into"   -Value $gateInstallDir
+
+    $installError = $null
+    try { Expand-Zip -Path $gateZip -DestinationPath $gateInstallDir }
+    catch { $installError = $_.Exception.Message }
+
+    Assert-That -Name "a fresh install extracts from its sibling staging directory" `
+        -Condition ($null -eq $installError) -Detail $installError
+    Assert-That -Name "the extracted binary lands in the install directory" `
+        -Condition (Test-Path -LiteralPath (Join-Path $gateInstallDir 'proxiport.exe'))
+
+    # The guard still has to do its actual job: an archive genuinely inside its
+    # own destination is deleted by the PowerShell < 5 fallback before it can be
+    # read, so that must still be refused.
+    $containedZip = Join-Path $gateInstallDir 'contained.zip'
+    Copy-Item -LiteralPath $gateZip -Destination $containedZip -Force
+    $containedError = $null
+    try { Expand-Zip -Path $containedZip -DestinationPath $gateInstallDir }
+    catch { $containedError = $_.Exception.Message }
+
+    Assert-That -Name "an archive inside its own destination is still refused" `
+        -Condition ($null -ne $containedError) -Detail 'the containment guard is no longer firing'
+
+    Remove-Item -LiteralPath $installSandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+
 Write-Host "=== Result ==="
 if ($Env:GITHUB_STEP_SUMMARY)
 {

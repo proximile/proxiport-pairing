@@ -101,7 +101,17 @@ function Expand-Zip
     # extracting, so a ZIP staged inside the directory it extracts to is deleted
     # before it can be read. Refuse rather than fail obscurely on exactly the
     # old PowerShell versions the fallback exists for.
-    if ($Path.StartsWith($DestinationPath, [System.StringComparison]::OrdinalIgnoreCase))
+    #
+    # Compare whole path components, not raw string prefixes. A bare
+    # StartsWith also fires on a SIBLING whose name merely begins with the
+    # destination's -- and that is exactly how install.ps1 stages, in
+    # "%ProgramFiles%\proxiport-install-tmp" next to "%ProgramFiles%\proxiport".
+    # A raw prefix test made every fresh ZIP install throw here, after mkdir
+    # had already created the install directory, so the retry then refused
+    # with "ProxiPort is already installed".
+    $archivePath = $Path -replace '/', '\'
+    $destinationPrefix = ($DestinationPath -replace '/', '\').TrimEnd('\') + '\'
+    if ($archivePath.StartsWith($destinationPrefix, [System.StringComparison]::OrdinalIgnoreCase))
     {
         throw "Refusing to extract $( $Path ) into $( $DestinationPath ): the archive is inside its own destination."
     }
