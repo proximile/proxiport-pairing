@@ -39,7 +39,7 @@ jobs:
       # Kept on failure so a broken render can be inspected without a rerun.
       - name: Upload the rendered scripts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rendered-windows-scripts
           path: ${{ runner.temp }}\rendered
