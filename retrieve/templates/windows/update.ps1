@@ -53,70 +53,52 @@ else
     $currentVersion = $( $versionString -split " " )[1]
 }
 
-$isMsiInstallation = $False
+# One-time cleanup. Earlier versions staged the new binary in
+# C:\windows\temp\proxiport-update, a directory any local user can create
+# files in. Remove whatever is there -- including anything planted -- rather
+# than leave it for a privileged process to find.
+if (Test-Path 'C:\windows\temp\proxiport-update')
+{
+    Remove-Item 'C:\windows\temp\proxiport-update' -Recurse -Force -ErrorAction SilentlyContinue
+}
 
-$downloadFile = Invoke-Download -gt $currentVersion -pkgUrl $pkgUrl
+# Stage under the install directory, which grants BUILTIN\Users read and
+# execute only. The download goes in the install directory itself rather than
+# in the extraction directory, because Expand-Zip's PowerShell < 5 fallback
+# empties its destination before extracting.
+$stagingDir = Get-StagingDir -Path "$( $installDir )\update"
+
+$downloadFile = Invoke-Download -gt $currentVersion -pkgUrl $pkgUrl -StagingDir $installDir
 If ((Get-Item $downloadFile).length -eq 0)
 {
     Write-Output "* No ProxiPort update needed. You are on the latest $currentVersion version."
     Remove-Item $downloadFile
+    Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
     Set-Location $myLocation
     exit 0
 }
 Write-Output "* Download finished and stored to $( $downloadFile ) ."
 
-# Create an empty temp dir
-$temp = 'C:\windows\temp\proxiport-update\'
-if (Test-Path $temp)
+# ProxiPort publishes no MSI packages: Invoke-Download only ever returns a
+# .zip, so the MSI and MSI-migration branches that used to be here could not
+# run. They are gone, along with the two extra code paths they left in the
+# scheduled task that runs as SYSTEM.
+Write-Output "* Extracting ProxiPort.exe to $stagingDir"
+Expand-Zip -Path $downloadFile -DestinationPath $stagingDir
+Remove-Item $downloadFile
+if (Test-Path (Join-Path $stagingDir 'proxiport.example.conf'))
 {
-    Remove-Item $temp -Recurse -Force
+    Remove-Item (Join-Path $stagingDir 'proxiport.example.conf') -Force
 }
-New-Item -ItemType Directory -Force -Path $temp|Out-Null
+$targetVersion = (& (Join-Path $stagingDir 'proxiport.exe') --version) -replace "version ", ""
+Write-Output "* New version will be $targetVersion."
 
-if ($isMsiInstallation)
-{
-    # ProxiPort is installed via MSI, so all updates will be handled by MSI
-    # Move the MSI to a folder from where it's picket up later
-    Move-Item $downloadFile $( $temp + 'proxiport.msi' )
-}
-elseif($downloadFile -match '\.msi$')
-{
-    Write-Information "* Migrating to MSI installation"
-    #$targetVersion = Get-MSIVersionInfo -Path $downloadFile
-    # ProxiPort is currently installed via ZIP but the update comes as MSI.
-    # Move the MSI to a folder from where it's picket up later
-    Move-Item $downloadFile $( $temp + 'proxiport.msi' )
-    # Create a migration that will be executed after the proxiport client has been stopped.
-    New-PSScriptFile -Path $( $temp + 'migration.ps1' ) -ScriptBlock {
-        & "C:\Program Files\proxiport\proxiport.exe" --service uninstall
-        Remove-Item "C:\Program Files\proxiport\proxiport.exe"
-        Remove-Item "C:\Program Files\proxiport\uninstall.bat"
-    }
-
-}
-else
-{
-    # ProxiPort is installed from a ZIP file and shall be upgraded via ZIP
-    # Extract the ZIP file and place it into a folder from where it's picked up later
-    Write-Output "* Extracting ProxiPort.exe to $temp"
-    if (Test-Path $( $temp + 'proxiport.example.conf' ))
-    {
-        Remove-Item $( $temp + 'proxiport.example.conf' ) -Force
-    }
-    if (Test-Path $( $temp + 'proxiport.exe' ))
-    {
-        Remove-Item $( $temp + 'proxiport.exe' ) -Force
-    }
-    Expand-Zip -Path $downloadFile -DestinationPath $temp
-    Remove-Item $downloadFile
-    Remove-Item $( $temp + 'proxiport.example.conf' )
-    $targetVersion = (& "$( $temp )/proxiport.exe" --version) -replace "version ", ""
-    Write-Output "* New version will be $targetVersion."
-    Remove-Item $temp -Recurse -Force
-    # Now the new proxiport.exe is stored in a temporary directory.
-    # Because proxiport is still running, we cannot replace the current version yet.
-    # Changing the exe is done by Invoke-Later so the current proxiport connection can be closed first.
-}
+# Hand exactly one file across to the scheduled task, at a path only SYSTEM and
+# Administrators can write, and drop the staging directory now. proxiport is
+# still running so its own exe cannot be replaced yet; Invoke-Later does the
+# swap once the current connection has been closed.
+Move-Item (Join-Path $stagingDir 'proxiport.exe') "$( $installDir )\proxiport.new.exe" -Force
+Remove-Item $stagingDir -Recurse -Force
 
 
 
@@ -292,7 +274,18 @@ function Invoke-Later
         [string] $Description = "Background Task"
     )
     $taskName = 'Invoke-Later-' + (Get-Random)
-    $taskFile = [System.Environment]::GetEnvironmentVariable('TEMP', 'Machine') + '\' + $taskName + '.ps1'
+    # Not the machine TEMP directory: as SYSTEM that is C:\Windows\Temp, where
+    # any local user can create files. This one is written by an elevated
+    # process and then executed by SYSTEM, so it belongs where BUILTIN\Users
+    # cannot create anything. It also must not go in the staging directory,
+    # which every run of this script wipes -- a second run inside the delay
+    # window would delete a pending task's script and leave the task orphaned.
+    $taskFile = Join-Path $installDir "$( $taskName ).ps1"
+    if (Test-Path $taskFile)
+    {
+        throw "Refusing to write $( $taskFile ): it already exists."
+    }
+    New-Item -ItemType File -Path $taskFile -ErrorAction Stop | Out-Null
     $ScriptBlock.Split("`n") | ForEach-Object {
         if ($_)
         {
@@ -301,7 +294,11 @@ function Invoke-Later
     }
     "Unregister-ScheduledTask -Taskname $( $taskName ) -Confirm:`$false" | Out-File -FilePath $taskFile -Append
     "Remove-Item `"$( $taskFile )`" -Force" | Out-File -FilePath $taskFile -Append
-    $action = New-ScheduledTaskAction -Execute "powershell" -Argument "-ExecutionPolicy bypass -file $( $taskFile )"
+    # The task-script path now contains a space, so -File must be quoted, and
+    # the interpreter is named by full path rather than resolved through PATH.
+    $action = New-ScheduledTaskAction `
+        -Execute "$( $Env:SystemRoot )\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Argument "-NonInteractive -NoProfile -ExecutionPolicy Bypass -File `"$( $taskFile )`""
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds($Delay)
     $principal = New-ScheduledTaskPrincipal -UserID "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries
@@ -332,32 +329,27 @@ Optimize-ServiceStartup
 # Create a scheduled task to restart ProxiPort.
 try
 {
+    # This block is stringified, so nothing in it interpolates: the paths must
+    # be literals. It is also the only thing that runs as SYSTEM after the
+    # script exits, so it does exactly one thing -- move a file that only
+    # SYSTEM and Administrators could have written. Move-Item leaves the source
+    # in place if it fails, so a failed swap leaves proxiport.new.exe for the
+    # operator instead of silently reverting to the old binary with nothing to
+    # retry from.
     Invoke-Later -Description "Restart ProxiPort" -Delay 10 -ScriptBlock {
         Stop-Service proxiport
-        $exeUpdate = 'C:\windows\temp\proxiport-update\proxiport.exe'
-        $msiUpdate = 'C:\windows\temp\proxiport-update\proxiport.msi'
-        $migartion = 'C:\windows\temp\proxiport-update\migration.ps1'
-        if (Test-Path $exeUpdate)
+        $newExe = 'C:\Program Files\proxiport\proxiport.new.exe'
+        if (Test-Path $newExe)
         {
-            Copy-Item $exeUpdate 'C:\Program Files\proxiport\proxiport.new'
-            Move-Item 'C:\Program Files\proxiport\proxiport.new'  'C:\Program Files\proxiport\proxiport.exe' -Force
-            Remove-Item 'C:\windows\temp\proxiport-update' -Force -Recurse
-        }
-        if (Test-Path $migartion)
-        {
-            & $migartion
-        }
-        if (Test-Path $msiUpdate)
-        {
-            $msiLog = 'C:\windows\temp\proxiport-update\proxiport.msi-install.log'
-            Start-Process msiexec.exe -Wait -ArgumentList "/i $( $msiUpdate ) /qn /quiet /log $( $msiLog )"
+            Move-Item $newExe 'C:\Program Files\proxiport\proxiport.exe' -Force
         }
         Start-Service proxiport
     }
 }
 catch
 {
-    Copy-Item 'C:\windows\temp\proxiport-update\proxiport.exe' 'C:\Program Files\proxiport\proxiport.new.exe'
+    # proxiport.new.exe is already staged, so there is nothing to copy: the
+    # instructions below act on it directly.
     Write-Output ": Scheduling the restart of proxiport failed"
     Write-Output ": Try the following on your PowerShell to activate the new version."
     Write-Output "PS >

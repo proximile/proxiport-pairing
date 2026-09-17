@@ -250,9 +250,15 @@ Assert-That -Name "unprivileged users cannot create files in $programFiles" `
 
 
 # ---------------------------------------------------------------------------
-Write-Section "Update staging leaves the binary the restart task installs"
-# Drives the updater's own extract-and-stage block, taken out of the rendered
-# script rather than restated here, so this cannot drift from what ships.
+Write-Section "Update staging leaves a binary for the restart task to install"
+# Drives the updater's own extract-and-stage sequence, taken out of the rendered
+# script through its syntax tree rather than restated here, so this cannot drift
+# from what ships.
+#
+# The sequence is the run of statements from the Expand-Zip call to the end of
+# the block containing it, stopping at the first function definition. That
+# identifies it whether the staging code sits inside a branch or at the top
+# level, so the check survives the surrounding script being reorganised.
 
 $updateBody = Get-RenderedSection -Content $rendered['update.ps1'] -Section 'templates/windows/update.ps1'
 $functionsBody = Get-RenderedSection -Content $rendered['update.ps1'] -Section 'templates/windows/functions.ps1'
@@ -260,43 +266,69 @@ $functionsBody = Get-RenderedSection -Content $rendered['update.ps1'] -Section '
 $errors = $null
 $updateAst = [System.Management.Automation.Language.Parser]::ParseInput($updateBody, [ref]$null, [ref]$errors)
 
-$stagingIf = $updateAst.FindAll({
+$expandCall = $updateAst.FindAll({
     param($node)
-    $node -is [System.Management.Automation.Language.IfStatementAst] -and
-    $node.Clauses[0].Item1.Extent.Text -match 'isMsiInstallation'
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq 'Expand-Zip'
 }, $true) | Select-Object -First 1
 
-if (-not $stagingIf -or -not $stagingIf.ElseClause)
+if (-not $expandCall)
 {
-    throw "could not locate the update staging branch in the rendered update script"
+    throw "could not find the Expand-Zip call in the rendered update script"
 }
-$stagingBlock = ($stagingIf.ElseClause.Statements | ForEach-Object { $_.Extent.Text }) -join "`n"
+
+# Walk out to the statement the call belongs to, then to the block holding it.
+$stagingStatement = $expandCall
+while ($stagingStatement.Parent -and -not ($stagingStatement.Parent -is [System.Management.Automation.Language.StatementBlockAst] -or
+                                            $stagingStatement.Parent -is [System.Management.Automation.Language.NamedBlockAst]))
+{
+    $stagingStatement = $stagingStatement.Parent
+}
+$stagingBlockAst = $stagingStatement.Parent
+$statements = @($stagingBlockAst.Statements)
+$firstIndex = [Array]::IndexOf($statements, $stagingStatement)
+
+$stagingStatements = @()
+for ($i = $firstIndex; $i -lt $statements.Count; $i++)
+{
+    if ($statements[$i] -is [System.Management.Automation.Language.FunctionDefinitionAst]) { break }
+    $stagingStatements += $statements[$i]
+}
+$stagingBlock = ($stagingStatements | ForEach-Object { $_.Extent.Text }) -join "`n"
+Write-Host "  extracted $( $stagingStatements.Count ) statement(s) beginning at line $( $stagingStatements[0].Extent.StartLineNumber ) of the update script"
 
 $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("staging-" + [System.Guid]::NewGuid().ToString('N'))
-$staging = Join-Path $sandbox 'proxiport-update'
+$installDir = Join-Path $sandbox 'proxiport'
+$staging = Join-Path $installDir 'update'
 $payload = Join-Path $sandbox 'payload'
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
-# A real console executable, so the version probe in the staging block behaves
-# the way it does against a real release archive.
+# A real console executable, so the version probe behaves as it does against a
+# real release archive.
 Add-Type -TypeDefinition 'public static class Stub { public static void Main() { System.Console.WriteLine("version 9.9.9"); } }' `
     -OutputAssembly (Join-Path $payload 'proxiport.exe') -OutputType ConsoleApplication
 '# placeholder' | Set-Content -Path (Join-Path $payload 'proxiport.example.conf')
 
-$archive = Join-Path $sandbox 'proxiport_9.9.9_Windows_x86_64.zip'
+$archive = Join-Path $installDir 'proxiport_9.9.9_Windows_x86_64.zip'
 Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archive
+
+# The fixture the archive was built from has to go before anything counts
+# survivors, or it would itself satisfy the check and the gate would pass
+# whatever staging did.
+Remove-Item -LiteralPath $payload -Recurse -Force
 
 $funcFile = Join-Path $sandbox 'functions.ps1'
 Set-Content -Path $funcFile -Value $functionsBody -Encoding UTF8
 
-# Mirrors the script's own temp-directory creation, which sits just above the
-# branch under test.
-New-Item -ItemType Directory -Force -Path $staging | Out-Null
-
+# Both the staging directory and the download path are established above the
+# extracted sequence, so supply them under names either version may use.
 $driver = Join-Path $sandbox 'drive-staging.ps1'
 @"
 . '$funcFile'
 `$myLocation = '$sandbox'
+`$installDir = '$installDir'
+`$stagingDir = '$staging'
 `$temp = '$staging\'
 `$downloadFile = '$archive'
 $stagingBlock
@@ -306,30 +338,28 @@ $driverOutput = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -Exe
 $driverExit = $LASTEXITCODE
 $driverOutput | ForEach-Object { Write-Host "    $_" }
 
-Assert-That -Name "the update staging block runs without error" -Condition ($driverExit -eq 0) `
+Assert-That -Name "the update staging sequence runs without error" -Condition ($driverExit -eq 0) `
     -Detail "exit code $driverExit"
 
-$stagedExe = Join-Path $staging 'proxiport.exe'
-$stagedExists = Test-Path -LiteralPath $stagedExe
-
-# The restart task the updater schedules installs from this path. If staging
-# does not leave a binary there, the task stops the service, finds nothing, and
-# starts the old binary again -- the update silently does nothing.
-$taskInstallsFromStaging = $updateBody -match 'proxiport-update\\proxiport\.exe'
-Assert-That -Name "the restart task installs from the staging directory" -Condition $taskInstallsFromStaging
-
-Write-Measured -Name "staged binary present after staging completes" -Value $stagedExists
-Write-Measured -Name "staging directory present after staging completes" -Value (Test-Path -LiteralPath $staging)
-
-if (-not $stagedExists)
+# The restart task installs whatever staging left behind. If staging leaves no
+# binary at all, the task stops the service, finds nothing, and starts the old
+# one again: the update reports success and applies nothing.
+# Only what is under the install directory counts: that is where the restart
+# task looks, and it excludes anything the harness itself left lying around.
+$survivors = @(Get-ChildItem -Path $installDir -Recurse -Filter 'proxiport*.exe' -ErrorAction SilentlyContinue)
+foreach ($survivor in $survivors)
 {
-    Write-Host ""
-    Write-Host "  NOTE: staging removed the binary that the restart task installs from,"
-    Write-Host "        so an update applies nothing. Measured, not gated, because it"
-    Write-Host "        describes current behaviour rather than intended behaviour."
-    $script:Summary.Add("")
-    $script:Summary.Add("> Staging removed the binary the restart task installs from, so an update applies nothing.")
+    Write-Measured -Name "staged binary" -Value $survivor.FullName.Substring($sandbox.Length).TrimStart('\')
 }
+Write-Measured -Name "staging directory still present" -Value (Test-Path -LiteralPath $staging)
+
+Assert-That -Name "staging leaves a binary for the restart task to install" `
+    -Condition ($survivors.Count -ge 1) `
+    -Detail "no proxiport executable survived the staging sequence"
+
+$taskInstallsFromStaging = $updateBody -match 'proxiport-update\\proxiport\.exe'
+Assert-That -Name "the restart task no longer installs from the world-writable temp directory" `
+    -Condition (-not $taskInstallsFromStaging)
 
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -452,6 +482,81 @@ foreach ($file in @('update.ps1'))
 
 # ---------------------------------------------------------------------------
 Write-Host ""
+# ---------------------------------------------------------------------------
+Write-Section "A fresh install can extract into its install directory"
+# Everything above drives the UPDATE path. The install path had no gate at all,
+# which is how a guard that refuses every fresh install reached a green run:
+# Expand-Zip refused to extract when the archive sat "inside" its destination,
+# and it decided that with a raw string prefix test. install.ps1 stages in
+# "%ProgramFiles%\proxiport-install-tmp" and extracts into "%ProgramFiles%\proxiport",
+# and the first string does begin with the second -- so the guard fired on a
+# sibling directory and every new Windows agent failed to install.
+#
+# Runs the real Expand-Zip, lifted out of the rendered installer through its
+# syntax tree, against the real pair of paths taken from the same script.
+
+$installerFunctions = Get-RenderedSection -Content $rendered['installer.ps1'] -Section 'templates/windows/functions.ps1'
+
+$expandZipSource = $null
+if ($installerFunctions)
+{
+    $fnAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        ($installerFunctions -join "`n"), [ref]$null, [ref]$null)
+    $expandZipSource = $fnAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Expand-Zip'
+    }, $true) | Select-Object -First 1
+}
+
+Assert-That -Name "Expand-Zip is defined in the rendered installer" -Condition ($null -ne $expandZipSource)
+
+if ($expandZipSource)
+{
+    . ([scriptblock]::Create($expandZipSource.Extent.Text))
+
+    $installSandbox = Join-Path $Env:TEMP ("install-gate-" + [System.Guid]::NewGuid().ToString('N'))
+    # Mirror the shipped shape exactly: the staging directory is a SIBLING of
+    # the install directory whose name starts with the install directory's.
+    $gateInstallDir = Join-Path $installSandbox 'proxiport'
+    $gateStagingDir = Join-Path $installSandbox 'proxiport-install-tmp'
+    New-Item -ItemType Directory -Path $gateInstallDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $gateStagingDir -Force | Out-Null
+
+    $payloadDir = Join-Path $installSandbox 'payload'
+    New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $payloadDir 'proxiport.exe') -Value 'binary' -Encoding Ascii
+    $gateZip = Join-Path $gateStagingDir 'proxiport_0.0.0_windows_x86_64.zip'
+    Compress-Archive -Path (Join-Path $payloadDir '*') -DestinationPath $gateZip -Force
+
+    Write-Measured -Name "archive staged at" -Value $gateZip
+    Write-Measured -Name "extracting into"   -Value $gateInstallDir
+
+    $installError = $null
+    try { Expand-Zip -Path $gateZip -DestinationPath $gateInstallDir }
+    catch { $installError = $_.Exception.Message }
+
+    Assert-That -Name "a fresh install extracts from its sibling staging directory" `
+        -Condition ($null -eq $installError) -Detail $installError
+    Assert-That -Name "the extracted binary lands in the install directory" `
+        -Condition (Test-Path -LiteralPath (Join-Path $gateInstallDir 'proxiport.exe'))
+
+    # The guard still has to do its actual job: an archive genuinely inside its
+    # own destination is deleted by the PowerShell < 5 fallback before it can be
+    # read, so that must still be refused.
+    $containedZip = Join-Path $gateInstallDir 'contained.zip'
+    Copy-Item -LiteralPath $gateZip -Destination $containedZip -Force
+    $containedError = $null
+    try { Expand-Zip -Path $containedZip -DestinationPath $gateInstallDir }
+    catch { $containedError = $_.Exception.Message }
+
+    Assert-That -Name "an archive inside its own destination is still refused" `
+        -Condition ($null -ne $containedError) -Detail 'the containment guard is no longer firing'
+
+    Remove-Item -LiteralPath $installSandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+
 Write-Host "=== Result ==="
 if ($Env:GITHUB_STEP_SUMMARY)
 {
