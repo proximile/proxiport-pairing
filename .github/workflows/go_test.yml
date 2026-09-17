@@ -21,6 +21,13 @@ jobs:
         with:
           go-version: '1.26.8'
 
+      # TestLinuxScriptsPassShellcheck skips when the tool is absent, so without
+      # this the shell-script half of the suite would quietly check nothing.
+      # The Windows scripts get a whole windows-latest job; the Linux ones got a
+      # single textual assertion until these tests were added.
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
       - name: Go Test
         run: go test -race ./...
 
