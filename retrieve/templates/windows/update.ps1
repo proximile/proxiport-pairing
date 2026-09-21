@@ -13,13 +13,14 @@ Parameters:
 "
     exit
 }
-$release = If ($t)
+# -t asked for an unstable build. ProxiPort publishes no prereleases, and the
+# value computed here was never read by anything -- so the switch installed
+# stable while the operator believed otherwise. Say so instead of deciding it
+# silently; the switch is still accepted, so nobody's existing command line
+# starts erroring out.
+if ($t)
 {
-    "unstable"
-}
-Else
-{
-    "stable"
+    Write-Output "* -t was given, but ProxiPort publishes no unstable releases. Installing the stable release."
 }
 $enableScripts = $null
 $enableScripts = If ($x)
@@ -68,7 +69,7 @@ if (Test-Path 'C:\windows\temp\proxiport-update')
 # empties its destination before extracting.
 $stagingDir = Get-StagingDir -Path "$( $installDir )\update"
 
-$downloadFile = Invoke-Download -gt $currentVersion -pkgUrl $pkgUrl -StagingDir $installDir
+$downloadFile = Invoke-Download -gt $currentVersion -pkgUrl $pkgUrl -StagingDir $installDir -Version $v
 If ((Get-Item $downloadFile).length -eq 0)
 {
     Write-Output "* No ProxiPort update needed. You are on the latest $currentVersion version."

@@ -557,6 +557,170 @@ if ($expandZipSource)
 }
 
 
+# ---------------------------------------------------------------------------
+Write-Section "Add-ToConfig keeps the agent config a set of lines"
+# Add-ToConfig used to test `$ConfigContent -NotMatch "[$block]"` with an ARRAY
+# on the left. In PowerShell that is a filter, not a boolean: it returns every
+# element that does not match, which for any real config is a non-empty array
+# and therefore always true. So the "append the missing block" branch ran every
+# time, and "$ConfigContent" flattened the whole file into one space-separated
+# line. update.ps1 is the one caller, it passes a raw Get-Content array, and it
+# writes the result straight back -- so a proxiport.conf, whose first line is a
+# #==== banner, became a single comment. Server URL, auth credential and
+# fingerprint all gone, the service restarted, and the host never reconnected:
+# recoverable only with physical or RDP access.
+#
+# Driven against the rendered functions.ps1, so this tests what the service
+# actually serves, and the function is lifted out by AST rather than by
+# sourcing the whole template.
+$addToConfigSource = $null
+$fnSection = Get-RenderedSection -ScriptDir $ScriptDir -Template 'functions.ps1'
+if ($fnSection)
+{
+    $fnSectionAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        $fnSection, [ref] $null, [ref] $null)
+    $addToConfigSource = $fnSectionAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Add-ToConfig'
+    }, $true) | Select-Object -First 1
+}
+
+Assert-That -Name "Add-ToConfig is defined in the rendered functions" `
+    -Condition ($null -ne $addToConfigSource)
+
+if ($addToConfigSource)
+{
+    . ([scriptblock]::Create($addToConfigSource.Extent.Text))
+
+    $originalConfig = @(
+        '#=========================================================',
+        '# ProxiPort agent configuration',
+        '#=========================================================',
+        '[client]',
+        '  server = "port.example.com:443"',
+        '  auth = "agent-id:agent-secret"',
+        '',
+        '[interpreter-aliases]',
+        "#  pwsh7 = 'C:\Program Files\PowerShell\7\pwsh.exe'"
+    )
+
+    # Assigned the way update.ps1 assigns it: no @() wrapper, which would wrap
+    # the returned array inside a second array and make this read as flattened
+    # whether or not it is.
+    $updatedConfig = Add-ToConfig -ConfigContent $originalConfig -Block 'interpreter-aliases' `
+        -Line "bash = 'C:\Program Files\Git\bin\bash.exe'"
+
+    Write-Measured -Name "config lines in" -Value $originalConfig.Count
+    Write-Measured -Name "config lines out" -Value @($updatedConfig).Count
+
+    Assert-That -Name "Add-ToConfig returns lines, not one flattened string" `
+        -Condition ($updatedConfig -is [System.Array]) `
+        -Detail "returned $( $updatedConfig.GetType().FullName )"
+
+    Assert-That -Name "the config does not lose lines" `
+        -Condition (@($updatedConfig).Count -ge $originalConfig.Count) `
+        -Detail "went from $( $originalConfig.Count ) to $( @($updatedConfig).Count )"
+
+    Assert-That -Name "the server line survives as its own line" `
+        -Condition (@($updatedConfig | Where-Object { $_ -match '^\s*server\s*=' }).Count -eq 1) `
+        -Detail 'the config was flattened into a single comment'
+
+    Assert-That -Name "the auth credential survives as its own line" `
+        -Condition (@($updatedConfig | Where-Object { $_ -match '^\s*auth\s*=' }).Count -eq 1) `
+        -Detail 'the config was flattened into a single comment'
+
+    Assert-That -Name "an existing block is not duplicated" `
+        -Condition (@($updatedConfig | Where-Object { $_ -match '^\s*\[interpreter-aliases\]' }).Count -eq 1) `
+        -Detail 'the missing-block branch fired on a block that was present'
+
+    Assert-That -Name "the interpreter alias is actually added" `
+        -Condition (@($updatedConfig | Where-Object { $_ -match '^\s*bash\s*=' }).Count -eq 1) `
+        -Detail 'nothing was added, so the gates above would pass vacuously'
+
+    # The other half: a block that genuinely is missing must be appended, once,
+    # with the line beneath it and the existing lines untouched.
+    $noBlockConfig = @('# banner', '[client]', '  server = "x:443"')
+    $appendedConfig = Add-ToConfig -ConfigContent $noBlockConfig -Block 'interpreter-aliases' `
+        -Line "bash = 'b.exe'"
+
+    Assert-That -Name "a missing block is appended exactly once" `
+        -Condition (@($appendedConfig | Where-Object { $_ -match '^\s*\[interpreter-aliases\]' }).Count -eq 1) `
+        -Detail 'the block was appended zero times or more than once'
+
+    Assert-That -Name "appending a block keeps the existing lines intact" `
+        -Condition (@($appendedConfig | Where-Object { $_ -match '^\s*server\s*=' }).Count -eq 1) `
+        -Detail 'the original lines were flattened'
+}
+
+# ---------------------------------------------------------------------------
+Write-Section "The updater's -v switch actually pins the release"
+# update_init.ps1 declared [String]$v and the rendered -h text advertised
+# "-v [version] Upgrade to the specified version", but $v was referenced
+# nowhere: Invoke-Download always resolved GitHub's "latest". An operator
+# pinning a fleet back off a bad release got the release they were rolling
+# back from, while the script printed the new version and "finished".
+#
+# Driven for real, with the network and checksum calls stubbed, so this
+# asserts where the download points rather than that a parameter exists.
+$invokeDownloadSource = $null
+if ($fnSection)
+{
+    $invokeDownloadSource = $fnSectionAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Invoke-Download'
+    }, $true) | Select-Object -First 1
+}
+
+Assert-That -Name "Invoke-Download is defined in the rendered functions" `
+    -Condition ($null -ne $invokeDownloadSource)
+
+if ($invokeDownloadSource)
+{
+    . ([scriptblock]::Create($invokeDownloadSource.Extent.Text))
+
+    $script:RequestedUrl = $null
+    $script:LatestWasResolved = $false
+    function Get-LatestReleaseTag { $script:LatestWasResolved = $true; return 'v9.9.9' }
+    function Confirm-ReleaseChecksum { param($FilePath, $AssetName, $Tag, $StagingDir) }
+    function Invoke-WebRequest
+    {
+        param($Uri, $OutFile, $Headers, [switch]$UseBasicParsing)
+        $script:RequestedUrl = $Uri
+        New-Item -ItemType File -Force -Path $OutFile | Out-Null
+    }
+
+    $pinStaging = Join-Path ([IO.Path]::GetTempPath()) ("pin-gate-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $pinStaging | Out-Null
+
+    $null = Invoke-Download -StagingDir $pinStaging -gt '0.8.3' -Version '0.8.2'
+    Write-Measured -Name "url for -v 0.8.2" -Value $script:RequestedUrl
+
+    Assert-That -Name "-v downloads the pinned release, not latest" `
+        -Condition ($script:RequestedUrl -like '*/download/v0.8.2/proxiport_0.8.2_windows_x86_64.zip') `
+        -Detail "requested $( $script:RequestedUrl )"
+    Assert-That -Name "-v does not consult GitHub's latest release at all" `
+        -Condition (-not $script:LatestWasResolved) `
+        -Detail 'Get-LatestReleaseTag was still called, so the pin is advisory only'
+
+    # A rollback is the whole point: the pinned version is older than the
+    # installed one, and must not be mistaken for "already up to date".
+    Assert-That -Name "-v to an older release is not treated as up to date" `
+        -Condition ($script:RequestedUrl -notlike '*up-to-date*') `
+        -Detail 'the rollback was short-circuited'
+
+    # Without -v the behaviour is unchanged: resolve latest.
+    $script:RequestedUrl = $null
+    $script:LatestWasResolved = $false
+    $null = Invoke-Download -StagingDir $pinStaging -gt '0.0.1'
+    Assert-That -Name "without -v the updater still resolves latest" `
+        -Condition ($script:LatestWasResolved -and $script:RequestedUrl -like '*/download/v9.9.9/*') `
+        -Detail "requested $( $script:RequestedUrl )"
+
+    Remove-Item -LiteralPath $pinStaging -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "=== Result ==="
 if ($Env:GITHUB_STEP_SUMMARY)
 {
