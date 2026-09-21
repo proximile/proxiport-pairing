@@ -573,12 +573,13 @@ Write-Section "Add-ToConfig keeps the agent config a set of lines"
 # Driven against the rendered functions.ps1, so this tests what the service
 # actually serves, and the function is lifted out by AST rather than by
 # sourcing the whole template.
+# $functionsBody is the functions.ps1 section already sliced out of the
+# rendered update.ps1 above -- the same bytes the service serves.
 $addToConfigSource = $null
-$fnSection = Get-RenderedSection -ScriptDir $ScriptDir -Template 'functions.ps1'
-if ($fnSection)
+if ($functionsBody)
 {
     $fnSectionAst = [System.Management.Automation.Language.Parser]::ParseInput(
-        $fnSection, [ref] $null, [ref] $null)
+        $functionsBody, [ref] $null, [ref] $null)
     $addToConfigSource = $fnSectionAst.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -664,7 +665,7 @@ Write-Section "The updater's -v switch actually pins the release"
 # Driven for real, with the network and checksum calls stubbed, so this
 # asserts where the download points rather than that a parameter exists.
 $invokeDownloadSource = $null
-if ($fnSection)
+if ($functionsBody)
 {
     $invokeDownloadSource = $fnSectionAst.FindAll({
         param($node)
