@@ -130,7 +130,7 @@ function Expand-Zip
 
 function Add-ToConfig
 {
-    [OutputType([String])]
+    [OutputType([String[]])]
     Param(
         [Parameter(Mandatory)]
         [Object[]]$ConfigContent,
@@ -143,14 +143,39 @@ function Add-ToConfig
     .SYNOPSIS
         Add a line to a block of a the proxiport toml configuration.
     #>
-    if ($configContent -NotMatch "\[$block\]")
+    # Join before testing, exactly as Set-TomlVar does. `-notmatch` with an
+    # ARRAY on its left is a filter, not a boolean: it returns every element
+    # that does not match, which for any real config is a non-empty array and
+    # therefore always truthy. The "append the missing block" branch ran every
+    # single time, and "$configContent" then flattened the whole file into one
+    # space-separated line. Because a proxiport.conf opens with a #==== banner,
+    # that commented out the agent's entire configuration -- server URL, auth
+    # credential and fingerprint included -- and update.ps1 wrote it straight
+    # back before restarting the service, so the host never reconnected and
+    # could only be fixed with physical or RDP access.
+    $lines = @($ConfigContent)
+    $blockPattern = "^\s*\[" + [Regex]::Escape($Block) + "\]"
+    if (($lines -join "`n") -notmatch "(?m)$blockPattern")
     {
-        # Append the block if missing
-        $configContent = "$configContent`n`n[$block]"
+        $lines += ''
+        $lines += "[$Block]"
     }
+
     Write-Information "* Adding `"$Line`" to [$Block]"
-    $configContent = $configContent -replace "\[$Block\]", "$&`n  $Line"
-    $configContent
+
+    # Rebuilt line by line rather than -replace over joined text, so the array
+    # shape that update.ps1 hands to WriteAllLines survives the call.
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in $lines)
+    {
+        $text = [string]$entry
+        $out.Add($text)
+        if ($text -match $blockPattern)
+        {
+            $out.Add("  $Line")
+        }
+    }
+    , $out.ToArray()
 }
 
 function Find-Interpreter
@@ -637,7 +662,13 @@ function Invoke-Download
         [string]$StagingDir,
         [Parameter()]
         [string]$gt = "0",
-        [string]$pkgUrl
+        [string]$pkgUrl,
+        # An explicit release to fetch, from the updater's -v switch. Empty
+        # means "whatever GitHub calls latest". Without this the switch was
+        # accepted, advertised in -h, and then ignored: an operator pinning a
+        # fleet back to the last good build got the release they were rolling
+        # back from, with no warning and a "finished" message.
+        [string]$Version
     )
     $Headers = @{ }
     # Set for the GitHub-release download path so the download can be checksum-
@@ -676,7 +707,21 @@ function Invoke-Download
     {
         # Download the zip of the latest GitHub release. ProxiPort
         # publishes no MSI packages.
-        $tag = Get-LatestReleaseTag
+        if ($Version)
+        {
+            $tag = If ($Version -match '^v')
+            {
+                $Version
+            }
+            Else
+            {
+                "v$( $Version )"
+            }
+        }
+        else
+        {
+            $tag = Get-LatestReleaseTag
+        }
         $version = $tag -replace '^v', ''
         if ($gt -ne "0" -and $version -eq $gt)
         {
