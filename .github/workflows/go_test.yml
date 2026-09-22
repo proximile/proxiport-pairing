@@ -39,6 +39,16 @@ jobs:
       - name: packaging account separation
         run: bash opt/packaging/account_test.sh
 
+      # The rendered Linux installer is the `curl | sh` path, and it creates
+      # its own account. While that account was `proxiport` -- the ProxiPort
+      # server's -- an agent installed this way on a server host could read
+      # proxiportd.conf and every database under /var/lib/proxiport. This runs
+      # the REAL rendered installer in a container against a stub release and
+      # asserts the boundary, for a fresh install and for an upgrade over the
+      # old shared-account layout. It refuses to skip.
+      - name: linux installer account separation
+        run: bash opt/packaging/linux_installer_test.sh
+
       # Known-vulnerability scan of the module (deps + the Go stdlib version).
       # govulncheck is call-graph aware, so it only fails on vulns actually
       # reachable from our code.

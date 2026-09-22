@@ -86,6 +86,70 @@ is_available() {
 #                 quoted where TOML needs quotes, e.g.
 #                 set_toml_key client server "\"$CONNECT_URL\"".
 #----------------------------------------------------------------------------------------------------------------------
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  installed_service_user
+#   DESCRIPTION:  Print the account an already-installed agent runs as, from
+#                 its service unit. Empty (and non-zero) when no agent is
+#                 installed.
+#
+#                 Read from the UNIT, never from "does a `proxiport` account
+#                 exist". On a host running the ProxiPort server that account
+#                 always exists, and treating it as evidence of an agent
+#                 install is exactly how the agent ends up sharing it.
+#----------------------------------------------------------------------------------------------------------------------
+installed_service_user() {
+  for UNIT in /etc/systemd/system/proxiport.service \
+              /lib/systemd/system/proxiport.service \
+              /usr/lib/systemd/system/proxiport.service; do
+    if [ -e "$UNIT" ]; then
+      sed -n 's/^[[:space:]]*User=//p' "$UNIT" | head -n1
+      return 0
+    fi
+  done
+  if [ -e /etc/init.d/proxiport ]; then
+    sed -n 's/^command_user="\(.*\)"$/\1/p' /etc/init.d/proxiport | head -n1
+    return 0
+  fi
+  return 1
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  resolve_account
+#   DESCRIPTION:  Settle USER, DATA_DIR, LOG_DIR and LOG_FILE before anything
+#                 uses them. Call once, after the options are parsed.
+#
+#                 A fresh install gets proxiport-agent (see vars.sh). An
+#                 existing install keeps the account it already has: moving a
+#                 running agent out of its own directories risks an install
+#                 that cannot write its log or its scripts dir, which is worse
+#                 than the exposure it would close, and the package upgrade is
+#                 what migrates a packaged install. `-a <user>` wins over both.
+#----------------------------------------------------------------------------------------------------------------------
+resolve_account() {
+  if [ "${USER_EXPLICIT:-0}" -eq 1 ]; then
+    throw_info "Using the account you asked for: ${USER}"
+  else
+    EXISTING_USER=$(installed_service_user 2>/dev/null || true)
+    if [ -n "$EXISTING_USER" ] && [ "$EXISTING_USER" != "$USER" ]; then
+      USER="$EXISTING_USER"
+      throw_info "An agent is already installed as '${USER}'. Keeping that account."
+    fi
+  fi
+
+  DATA_DIR=/var/lib/${USER}
+  LOG_DIR=/var/log/${USER}
+  LOG_FILE=${LOG_DIR}/proxiport.log
+
+  # The one case worth shouting about: the agent is (or would be) sharing the
+  # ProxiPort server's account on a host that runs the server too.
+  if [ "$USER" = "proxiport" ] && [ -e /etc/proxiport/proxiportd.conf ]; then
+    throw_warning "This agent runs as 'proxiport', which is also the ProxiPort server account on this host."
+    throw_warning "The agent executes operator-supplied commands as its own uid, so it can read the server's"
+    throw_warning "configuration and databases. Left unchanged so the running agent keeps its directories."
+    throw_hint "To separate them, uninstall the agent and reinstall it, or move it to its own account with -a."
+  fi
+}
+
 set_toml_key() {
   _stk_tmp="${CONFIG_FILE}.stk.$$"
   STK_SECT="$1" STK_KEY="$2" STK_VAL="$3" awk '
@@ -113,6 +177,18 @@ uninstall() {
     echo 1>&2 "You are running the proxiportd server on this machine. Uninstall manually."
     exit 0
   fi
+  # The pgrep guard above only sees a server that is RUNNING right now. A
+  # stopped or freshly installed server is just as easy to destroy: this used
+  # to `rm -rf /etc/proxiport`, which holds proxiportd.conf, and to delete the
+  # `proxiport` account and /var/lib/proxiport, which hold every database, the
+  # vault and the ACME key cache. Uninstalling the AGENT must never touch the
+  # server's anything.
+  SERVER_PRESENT=0
+  if [ -e /etc/proxiport/proxiportd.conf ] \
+     || [ -e /usr/local/bin/proxiportd ] || [ -e /usr/bin/proxiportd ]; then
+    SERVER_PRESENT=1
+    throw_info "The ProxiPort server is installed on this host; its account, config and data are left alone."
+  fi
   stop_proxiport >/dev/null 2>&1 || true
   rc-service proxiport stop >/dev/null 2>&1 || true
   pkill -9 proxiport >/dev/null 2>&1 || true
@@ -131,26 +207,36 @@ uninstall() {
       rm -f "$FILE" && echo " [ DELETED ] File $FILE"
     fi
   done
-  if id proxiport >/dev/null 2>&1; then
+  if [ "$USER" = "proxiport" ] && [ "$SERVER_PRESENT" -eq 1 ]; then
+    throw_warning "Not deleting the 'proxiport' account or /var/lib/proxiport: the server uses them."
+  elif id "$USER" >/dev/null 2>&1; then
     if is_available deluser; then
-      deluser --remove-home proxiport >/dev/null 2>&1 || true
-      deluser --only-if-empty --group proxiport >/dev/null 2>&1 || true
+      deluser --remove-home "$USER" >/dev/null 2>&1 || true
+      deluser --only-if-empty --group "$USER" >/dev/null 2>&1 || true
     elif is_available userdel; then
-      userdel -r -f proxiport >/dev/null 2>&1
+      userdel -r -f "$USER" >/dev/null 2>&1
     fi
     if is_available groupdel; then
-      groupdel -f proxiport >/dev/null 2>&1 || true
+      groupdel -f "$USER" >/dev/null 2>&1 || true
     fi
-    echo " [ DELETED ] User proxiport"
+    echo " [ DELETED ] User $USER"
   fi
-  FOLDERS="/etc/proxiport
-    /var/log/proxiport
-    /var/lib/proxiport"
-  for FOLDER in $FOLDERS; do
-    if [ -e "$FOLDER" ]; then
+
+  # Only the agent's own directories. /etc/proxiport is SHARED with the server,
+  # so remove the agent's config out of it and take the directory itself only
+  # when nothing else is left in it.
+  if [ -e "$CONFIG_FILE" ]; then
+    rm -f "$CONFIG_FILE" && echo " [ DELETED ] File $CONFIG_FILE"
+  fi
+  for FOLDER in "$LOG_DIR" "$DATA_DIR"; do
+    if [ "$FOLDER" = "/var/lib/proxiport" ] && [ "$SERVER_PRESENT" -eq 1 ]; then
+      continue
+    fi
+    if [ -n "$FOLDER" ] && [ -e "$FOLDER" ]; then
       rm -rf "$FOLDER" && echo " [ DELETED ] Folder $FOLDER"
     fi
   done
+  rmdir "$CONF_DIR" >/dev/null 2>&1 && echo " [ DELETED ] Folder $CONF_DIR" || true
   if dpkg -l 2>&1 | grep -q "proxiport.*Remote access"; then
       apt-get -y remove --purge proxiport
   fi
@@ -425,10 +511,10 @@ EOF
   else
     cat <<EOF >$FILERCV_SUDO
 # The following rule allows the proxiport client to change the ownership of any file retrieved from the proxiport server
-proxiport ALL=NOPASSWD: /usr/bin/chown * /var/lib/proxiport/filepush/*_proxiport_filepush
+${USER} ALL=NOPASSWD: /usr/bin/chown * ${DATA_DIR}/filepush/*_proxiport_filepush
 
 # The following rules allows the proxiport client to move copied files to any folder
-proxiport ALL=NOPASSWD: /usr/bin/mv /var/lib/proxiport/filepush/*_proxiport_filepush *
+${USER} ALL=NOPASSWD: /usr/bin/mv ${DATA_DIR}/filepush/*_proxiport_filepush *
 
 EOF
   fi
@@ -658,7 +744,10 @@ EOF
 }
 
 validate_custom_user() {
-    if [ "$USER" != "proxiport" ]; then
+    # Keyed off the flag, not off a literal name: the default account moved to
+    # proxiport-agent, so comparing against "proxiport" would have rejected
+    # every default install.
+    if [ "${USER_EXPLICIT:-0}" -eq 1 ]; then
         throw_fatal "RPM/DEB packages cannot be used with a custom user. Try '-p'"
     fi
 }

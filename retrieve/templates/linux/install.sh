@@ -216,31 +216,27 @@ create_user() {
     confirm "User ${USER} already exist."
   else
     if is_available useradd; then
-      useradd -r -d /var/lib/proxiport -m -s /bin/false -U -c "System user for proxiport client" $USER
+      useradd -r -d "${DATA_DIR}" -m -s /bin/false -U -c "System user for proxiport client" "$USER"
     elif is_available adduser; then
-      addgroup proxiport
-      adduser -h /var/lib/proxiport -s /bin/false -G proxiport -S -D $USER
+      addgroup "$USER"
+      adduser -h "${DATA_DIR}" -s /bin/false -G "$USER" -S -D "$USER"
     else
       abort "No command found to add a user"
     fi
   fi
-#  test -e "$LOG_DIR" || mkdir -p "$LOG_DIR"
-#  test -e /var/lib/proxiport/scripts || mkdir -p /var/lib/proxiport/scripts
-#  chown "${USER}":root "$LOG_DIR"
-#  chown "${USER}":root /var/lib/proxiport/scripts
-#  chmod 0700 /var/lib/proxiport/scripts
-#  chown "${USER}":root "$CONFIG_FILE"
-#  chmod 0640 "$CONFIG_FILE"
-#  chown root:root /usr/local/bin/proxiport
-#  chmod 0755 /usr/local/bin/proxiport
 }
 
 set_file_and_dir_owner() {
     test -e "$LOG_DIR" || mkdir -p "$LOG_DIR"
-    test -e /var/lib/proxiport/scripts || mkdir -p /var/lib/proxiport/scripts
+    test -e "${DATA_DIR}" || mkdir -p "${DATA_DIR}"
+    test -e "${DATA_DIR}/scripts" || mkdir -p "${DATA_DIR}/scripts"
     chown "${USER}":root "$LOG_DIR"
-    chown "${USER}":root /var/lib/proxiport/scripts
-    chmod 0700 /var/lib/proxiport/scripts
+    chown "${USER}":root "${DATA_DIR}"
+    chown "${USER}":root "${DATA_DIR}/scripts"
+    # 0700 is not tidiness: the agent writes a command into this directory and
+    # then executes it, so anyone who can write here runs code as the agent.
+    # The agent refuses to run anything at all if the mode is wider.
+    chmod 0700 "${DATA_DIR}/scripts"
     chown "${USER}":root "$CONFIG_FILE"
     chmod 0640 "$CONFIG_FILE"
     if [ -e /usr/local/bin/proxiport ]; then
@@ -304,14 +300,22 @@ prepare_config() {
   set_toml_key client server "\"${CONNECT_URL}\""
   set_toml_key client auth "\"${CLIENT_ID}:${PASSWORD}\""
   set_toml_key client fingerprint "\"${FINGERPRINT}\""
-  sed -i "s/#*log_file = .*C.*Program Files.*/""/g" "$CONFIG_FILE"
-  sed -i "s/#*log_file = /log_file = /g" "$CONFIG_FILE"
+  # Both of these follow the account, so set them explicitly rather than just
+  # uncommenting whatever the shipped example happens to say. An install that
+  # keeps a legacy account needs the legacy paths, and a new one needs the new
+  # ones; leaving the example's value in place gives the agent directories it
+  # does not own.
+  set_toml_key logging log_file "\"${LOG_FILE}\""
+  set_toml_key client data_dir "\"${DATA_DIR}\""
   sed -i "s|#updates_interval = '4h'|updates_interval = '4h'|g" "$CONFIG_FILE"
   if [ "$ENABLE_COMMANDS" -eq 1 ]; then
     sed -i "s/#allow = .*/allow = ['.*']/g" "$CONFIG_FILE"
     sed -i "s/#deny = .*/deny = []/g" "$CONFIG_FILE"
     set_toml_key remote-scripts enabled true
-    sed -i "s|# script_dir = '/var/lib/proxiport/scripts'|script_dir = '/var/lib/proxiport/scripts'|g" "$CONFIG_FILE"
+    # There is no script_dir key. The agent joins data_dir and "scripts"
+    # (GetScriptsDir), so data_dir above is what decides where scripts land.
+    # The line that used to be here sed'd for a commented `script_dir` that no
+    # shipped config has ever contained, so it did nothing at all.
   else
     set_toml_key remote-commands enabled false
   fi
@@ -350,12 +354,12 @@ prepare_config() {
     if [ -n "$XTAG" ]; then
         XTAG="\"$XTAG\""
     fi
-    CLIENT_ATTRIBUTES="/var/lib/proxiport/client_attributes.json"
-    if [ -e /var/lib/proxiport ]; then
+    CLIENT_ATTRIBUTES="${DATA_DIR}/client_attributes.json"
+    if [ -e "${DATA_DIR}" ]; then
         true
     else
-        mkdir /var/lib/proxiport
-        chown "${USER}":root /var/lib/proxiport
+        mkdir -p "${DATA_DIR}"
+        chown "${USER}":root "${DATA_DIR}"
     fi
     cat <<EOF >$CLIENT_ATTRIBUTES
 {
@@ -554,7 +558,8 @@ Options:
 -s  Create sudo rules to grant full root access to the proxiport user.
 -r  Enable file reception. (sending files from server to client)
 -b  Create sudo rule for file reception to give full filesystem write access. Requires -r.
--a  <USER> Use a different user account than 'proxiport'. Will be created if not present.
+-a  <USER> Use a different user account than 'proxiport-agent'. Will be created if not present.
+    Its directories follow the name: /var/lib/<USER> and /var/log/<USER>.
 -l  Install with SELinux enabled.
 -g <TAG> Add an extra tag to the client.
 -d Do not use /etc/machine-id to identify this machine. A random UUID will be used instead.
@@ -582,7 +587,8 @@ finish() {
 #  This client is now connected to $CONNECT_URL
 #
 #  Look at $CONFIG_FILE and explore all options.
-#  Logs are written to /var/log/proxiport/proxiport.log.
+#  ProxiPort runs as the '$USER' account.
+#  Logs are written to $LOG_FILE.
 #
 #  READ THE DOCS ON https://docs.proxiport.net/
 #
@@ -612,7 +618,7 @@ fail() {
 Try the following to investigate:
 1) systemctl status proxiport
 
-2) tail /var/log/proxiport/proxiport.log
+2) tail $LOG_FILE
 
 3) Ask for help on https://github.com/proximile/proxiport/issues
 "
@@ -651,6 +657,7 @@ ENABLE_FILEREC=0
 ENABLE_FILEREC_SUDO=0
 XTAG=""
 NO_REPO=0
+USER_EXPLICIT=0
 while getopts 'phvfcsuxstldrba:g:z:' opt; do
   case "${opt}" in
 
@@ -671,7 +678,7 @@ while getopts 'phvfcsuxstldrba:g:z:' opt; do
   l) SELINUX_FORCE=1 ;;
   r) ENABLE_FILEREC=1 ;;
   b) ENABLE_FILEREC_SUDO=1 ;;
-  a) USER=${OPTARG} ;;
+  a) USER=${OPTARG}; USER_EXPLICIT=1 ;;
   g) XTAG=${OPTARG} ;;
   z) export PKG_URL="${OPTARG}" ;;
   d) MACHINE_ID=$(gen_uuid) ;;
@@ -684,6 +691,9 @@ while getopts 'phvfcsuxstldrba:g:z:' opt; do
   esac # --- end of case ---
 done
 shift $((OPTIND - 1))
+# Settle USER / DATA_DIR / LOG_DIR before anything reads them: -a has been
+# parsed by now, and an existing install keeps its own account.
+resolve_account
 prepare  # Prepare the system
 $ACTION  # Execute the function according to the users decision
 clean_up # Clean up the system
