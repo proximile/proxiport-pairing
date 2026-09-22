@@ -455,7 +455,10 @@ Write-Section "Scripts load the way a host runs them"
 # still fail to load once it is on disk -- and parsing the file in-process does
 # not necessarily go through the same decoding. Load it the way a host does.
 
-foreach ($file in @('update.ps1'))
+# installer.ps1 is not in here: it has no early-exit switch, so loading it
+# would attempt a real install on the runner.
+$probeFiles = @('update.ps1')
+foreach ($file in $probeFiles)
 {
     $path = Join-Path $ScriptDir $file
     $bytes = [System.IO.File]::ReadAllBytes($path)
@@ -469,7 +472,16 @@ foreach ($file in @('update.ps1'))
     $probeOutput = Invoke-Native { & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $path -h }
     $probeExit = $LASTEXITCODE
     $loaded = ($probeExit -eq 0)
-    Write-Measured -Name "$file loads from disk and prints usage" -Value $loaded
+
+    # A GATE, not a measurement. This is the invariant that caught the
+    # encoding outage: a script that is perfectly good UTF-8 in the repository
+    # can still fail to load once it is on disk, because Windows PowerShell
+    # decodes a BOM-less file with the system ANSI codepage. Every other check
+    # here reads the file; only this one runs it the way the documented flow
+    # does. As a measurement it could go red and merge anyway, which is the
+    # same shape as not having the check.
+    Assert-That -Name "$file loads from disk and prints usage" `
+        -Condition $loaded -Detail "powershell -File exited $probeExit"
     if (-not $loaded)
     {
         Write-Host "  script did not load; first lines of output:"
@@ -478,6 +490,12 @@ foreach ($file in @('update.ps1'))
         $script:Summary.Add("> ``$file`` does not load when saved to disk and run with -File, which is the documented flow.")
     }
 }
+
+# The loop above must actually have run. An empty file list would print
+# nothing and leave the section looking like a clean pass -- the same vacuous
+# shape this gate exists to catch.
+Assert-That -Name "the load probe ran against at least one script" `
+    -Condition ($probeFiles.Count -ge 1) -Detail "probed $($probeFiles.Count) file(s)"
 
 
 # ---------------------------------------------------------------------------

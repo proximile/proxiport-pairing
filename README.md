@@ -65,6 +65,32 @@ curl https://pairing.proxiport.net/9L6fHH -o proxiport-installer.sh
 sudo sh proxiport-installer.sh
 ```
 
+#### Which account the agent ends up in
+
+The Linux installer creates a dedicated system account, **`proxiport-agent`**,
+with `/var/lib/proxiport-agent` and `/var/log/proxiport-agent`.
+
+It is deliberately *not* `proxiport`. That name belongs to the ProxiPort
+**server**, and the agent runs operator-supplied commands as its own uid — so
+on a host that carries both, one shared account would let anything the agent
+runs read `/etc/proxiport/proxiportd.conf` (which holds `jwt_secret` and
+`key_seed`) and read and write every database, the vault and the ACME key
+cache under `/var/lib/proxiport`.
+
+- **An existing agent keeps the account it already has.** Re-running the
+  installer, or updating, never moves a running agent out of its own
+  directories. If that account is `proxiport` on a host that also runs the
+  server, the installer says so and tells you how to separate them.
+- **`-a <user>`** installs into an account you name; its directories follow
+  the name (`/var/lib/<user>`, `/var/log/<user>`).
+
+> **If you wrote your own sudo rules, they need updating.** Rules in
+> `/etc/sudoers.d/` are matched by user name, so a rule granting `proxiport`
+> a `NOPASSWD` command no longer applies to the agent. Change the user name to
+> `proxiport-agent` (or to whatever `-a` you used). The rules the installer
+> writes itself — `-s` for full sudo, `-b` for file reception, and the
+> package-manager rule for update checks — already name the right account.
+
 ### Pair (Windows)
 
 ```powershell

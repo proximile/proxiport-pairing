@@ -414,7 +414,7 @@ finish() {
 #
 #  Update of ProxiPort finished.
 #
-#  Logs are written to /var/log/proxiport/proxiport.log.
+#  Logs are written to $LOG_FILE.
 #
 #  READ THE DOCS ON https://docs.proxiport.net/
 #
@@ -447,7 +447,7 @@ fail() {
 Try the following to investigate:
 1) systemctl status proxiport
 
-2) tail /var/log/proxiport/proxiport.log
+2) tail $LOG_FILE
 
 3) Ask for help on https://github.com/proximile/proxiport/issues
 "
@@ -508,4 +508,7 @@ while getopts "hcuxdsrbz:" opt; do
   esac # --- end of case ---
 done
 shift $((OPTIND - 1))
+# The account, its data dir and its log file are whatever this host's agent
+# already uses; read them off the installed unit before anything touches them.
+resolve_account
 $ACTION # Execute the function according to the users decision

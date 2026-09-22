@@ -12,6 +12,10 @@
 #======================================================================================================================
 
 echo " Uninstall the ProxiPort client"
+# Settle USER / DATA_DIR / LOG_DIR first. Without this, uninstall() would use
+# vars.sh's defaults and walk past a host whose agent runs under the older
+# shared account -- removing nothing and reporting success.
+resolve_account
 uninstall
 echo " [ FINISH  ] ProxiPort client removed."
 echo ""
