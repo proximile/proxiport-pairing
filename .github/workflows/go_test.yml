@@ -31,6 +31,14 @@ jobs:
       - name: Go Test
         run: go test -race ./...
 
+      # The pairing daemon is internet-facing and must not share an account
+      # with the ProxiPort server: while it did, a compromise of this service
+      # on a co-hosted box reached proxiportd.conf (jwt_secret, key_seed) and
+      # every database under /var/lib/proxiport. This runs the real maintainer
+      # scripts in a container and asserts that boundary. It refuses to skip.
+      - name: packaging account separation
+        run: bash opt/packaging/account_test.sh
+
       # Known-vulnerability scan of the module (deps + the Go stdlib version).
       # govulncheck is call-graph aware, so it only fails on vulns actually
       # reachable from our code.
