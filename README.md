@@ -106,7 +106,12 @@ sudo mv proxiport-pairing /usr/local/bin/
 sudo mkdir -p /etc/proxiport
 sudo mv proxiport-pairing.conf.example /etc/proxiport/proxiport-pairing.conf
 sudo mv proxiport-pairing.service /etc/systemd/system/
-sudo useradd -r -s /usr/sbin/nologin proxiport || true
+# The pairing service's own account -- deliberately not the ProxiPort
+# server's `proxiport`. This daemon is internet-facing and stateless; it
+# has no business inside the server's trust boundary on a co-hosted box.
+sudo useradd -r -s /usr/sbin/nologin proxiport-pairing || true
+sudo chown root:proxiport-pairing /etc/proxiport/proxiport-pairing.conf
+sudo chmod 0640 /etc/proxiport/proxiport-pairing.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now proxiport-pairing
 ```

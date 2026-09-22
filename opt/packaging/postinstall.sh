@@ -16,7 +16,15 @@ real="/etc/proxiport/proxiport-pairing.conf"
 if [ -f "$example" ] && [ ! -f "$real" ]; then
     cp "$example" "$real"
     chmod 0640 "$real"
-    chown root:proxiport "$real"
+    chown root:proxiport-pairing "$real"
+fi
+
+# An install that predates the account split left this config group-owned by
+# `proxiport`, which is the ProxiPort SERVER's account. Hand it to the daemon
+# that actually reads it; unconditional, so it is a no-op once it is right.
+if [ -f "$real" ]; then
+    chown root:proxiport-pairing "$real"
+    chmod 0640 "$real"
 fi
 
 cat <<'EOF'
