@@ -3,7 +3,7 @@ module github.com/proximile/proxiport-pairing
 go 1.26.0
 
 require (
-	github.com/go-playground/validator/v10 v10.30.4
+	github.com/go-playground/validator/v10 v10.30.5
 	github.com/gorilla/mux v1.8.1
 	github.com/iancoleman/strcase v0.3.0
 	github.com/matoous/go-nanoid/v2 v2.1.0
