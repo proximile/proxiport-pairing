@@ -7,9 +7,7 @@ name: deploy-pairing
 #
 # Requires the repo secret `PAIRING_DEPLOY_SSH_KEY` — an Ed25519
 # private key whose public half is in /root/.ssh/authorized_keys
-# on the droplet. The workspace pubkey lives at
-# .secrets/pairing.proxiport.net_deploy.key.pub (it's the dedicated
-# auto-deploy key, NOT the operator's workstation key).
+# on the droplet. Use a key dedicated to this deploy.
 
 on:
   release:
