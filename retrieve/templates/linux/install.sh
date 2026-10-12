@@ -66,7 +66,10 @@ download_and_extract() {
     abort "Downloaded asset is empty: ${URL}"
   fi
   verify_checksum "proxiport.tar.gz" "${ASSET}" "${TAG}"
-  tar xzf proxiport.tar.gz
+  # -o: do not restore the archive's owner and group. Extracting as root
+  # would otherwise hand every member to whichever local account has the uid
+  # the archive was built with.
+  tar -xzof proxiport.tar.gz
 }
 
 # verify_signature <tag>
@@ -165,8 +168,8 @@ download_and_extract_from_url() {
     echo "Verifying download"
     FILES_IN_TAR=$(tar tzf "${DL}")
     confirm "Package contains $(echo "$FILES_IN_TAR" | wc -w) files"
-    tar xzf "${DL}" proxiport
-    tar xzf "${DL}" proxiport.example.conf
+    tar -xzof "${DL}" proxiport
+    tar -xzof "${DL}" proxiport.example.conf
     rm -f "${DL}"
 }
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
@@ -181,6 +184,10 @@ install_bin() {
       abort "${EXEC_BIN} already exists. Use -f to overwrite."
     fi
   fi
+  # root runs the binary right after this, so it is root's before it moves,
+  # whatever the archive said about it.
+  chown root:root "${TMP_FOLDER}/${1}"
+  chmod 0755 "${TMP_FOLDER}/${1}"
   mv "${TMP_FOLDER}/${1}" "${EXEC_BIN}"
   confirm "${1} installed to ${EXEC_BIN}"
   TARGET_VERSION=$(${EXEC_BIN} --version | awk '{print $2}')
@@ -198,6 +205,11 @@ install_config() {
     if [ -e "${CONFIG_FILE}" ]; then
         true
     elif [ -e "${TMP_FOLDER}/proxiport.example.conf" ]; then
+        # prepare_config writes the agent credential into this file before
+        # set_file_and_dir_owner runs, so it must not spend that time owned by
+        # the archive's uid or readable by everyone.
+        chown root:root "${TMP_FOLDER}/proxiport.example.conf"
+        chmod 0640 "${TMP_FOLDER}/proxiport.example.conf"
         mv "${TMP_FOLDER}/proxiport.example.conf" "${CONFIG_FILE}"
     else
         throw_hint "If you have used the ProxiPort RPM or DEB package previously, remove it first using the package manager."
