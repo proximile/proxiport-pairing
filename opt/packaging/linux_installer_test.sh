@@ -200,8 +200,9 @@ cat > "$WORK/pkg/proxiport.example.conf" <<'CONF'
 CONF
 ARCH=$(uname -m)
 # make_release <version>: the archive for one stub release, every member owned
-# by uid/gid 1001 as a runner-built archive is, plus its checksums.txt line
-# for the updater's verification step.
+# by uid/gid 1001 -- the worst case for an installer that extracts as root,
+# whatever the release pipeline happens to produce -- plus its checksums.txt
+# line for the updater's verification step.
 make_release() {
     _v="$1"; _d="$WORK/pkg-$_v"
     mkdir -p "$_d"
@@ -210,11 +211,34 @@ make_release() {
     cp "$WORK/pkg/proxiport.example.conf" "$_d/proxiport.example.conf"
     tar -C "$_d" --owner=1001 --group=1001 --numeric-owner \
         -czf "$WORK/srv/proxiport_${_v}_linux_${ARCH}.tar.gz" proxiport proxiport.example.conf
-    (cd "$WORK/srv" && sha256sum "proxiport_${_v}_linux_${ARCH}.tar.gz" >> checksums.txt)
+    # The installer is pointed at the archive by URL and checks the name
+    # against uname -m; the updater builds the name itself with goreleaser's
+    # arch spelling (arm64 for aarch64), so serve it under that name too.
+    if [ "$GREL_ARCH" != "$ARCH" ]; then
+        cp "$WORK/srv/proxiport_${_v}_linux_${ARCH}.tar.gz" "$WORK/srv/proxiport_${_v}_linux_${GREL_ARCH}.tar.gz"
+    fi
+    (cd "$WORK/srv" && sha256sum proxiport_"${_v}"_linux_*.tar.gz >> checksums.txt)
 }
+case "$ARCH" in
+    aarch64) GREL_ARCH=arm64 ;;
+    armv7l)  GREL_ARCH=armv7 ;;
+    *)       GREL_ARCH="$ARCH" ;;
+esac
 make_release 0.9.0
 make_release 0.9.1
 : > /run/pp-stub-owner
+
+# prepare_config writes the agent credential into the config and, while doing
+# so, calls get_hostname, which runs `hostname`. A stub records who owns the
+# config at that moment: the one point inside the window between install_config
+# and set_file_and_dir_owner that the end state cannot show.
+cat > /usr/local/sbin/hostname <<'HOSTNAME'
+#!/bin/sh
+stat -c '%U:%a' /etc/proxiport/proxiport.conf >> /run/pp-conf-owner 2>/dev/null
+exec /bin/hostname "$@"
+HOSTNAME
+chmod 0755 /usr/local/sbin/hostname
+: > /run/pp-conf-owner
 
 # busybox httpd serves the tarball AND answers the installer's reachability
 # probe, so CONNECT_URL and the package URL are the same origin.
@@ -291,7 +315,10 @@ Group=proxiport
 OLDUNIT
     install -d -o proxiport -g root -m 0700 /var/lib/proxiport/scripts
     printf '[client]\n  server = "http://127.0.0.1:8099"\n' > /etc/proxiport/proxiport.conf
+    # The earlier installer left the config 0640 and owned by the agent's
+    # account; that is the state the installer finds on such a host.
     chown proxiport:root /etc/proxiport/proxiport.conf
+    chmod 0640 /etc/proxiport/proxiport.conf
 fi
 
 # ---------------------------------------------------------------------------
@@ -338,6 +365,13 @@ check_ownership() {
         fail "/etc/proxiport/proxiport.conf, which holds the credential, belongs to the archive's uid"
     else
         pass "/etc/proxiport/proxiport.conf does not belong to the archive's uid"
+    fi
+    if [ ! -s /run/pp-conf-owner ]; then
+        fail "the hostname stub never saw the config being written, so the check below is vacuous"
+    elif grep -q '^bystander:' /run/pp-conf-owner || grep -qE ':[0-7]{0,2}[4-7]$' /run/pp-conf-owner; then
+        fail "the credential was written into a config that was $(sort -u /run/pp-conf-owner | tr '\n' ' ')"
+    else
+        pass "the config was neither the archive uid's nor world-readable while the credential went in ($(sort -u /run/pp-conf-owner | tr '\n' ' '))"
     fi
 }
 check_ownership
@@ -456,8 +490,11 @@ CURL
     chmod 0755 /usr/local/sbin/curl
     : > /run/pp-stub-owner
 
+    # -s answers the sudo question up front: without a terminal the updater
+    # otherwise prints its usage and exits 0 after replacing the binary, which
+    # would make everything below vacuous.
     set +e
-    sh "$UPDATER" > "$WORK/update.log" 2>&1
+    sh "$UPDATER" -s > "$WORK/update.log" 2>&1
     update_rc=$?
     set -e
     if [ "$update_rc" -ne 0 ]; then
@@ -465,11 +502,25 @@ CURL
         tail -40 "$WORK/update.log" >&2
         exit 1
     fi
+    if grep -q 'Update of ProxiPort finished\.' "$WORK/update.log" \
+       && grep -q 'You are now running' "$WORK/update.log"; then
+        pass "the updater ran to completion"
+    else
+        fail "the updater exited 0 without finishing (no completion banner in update.log)"
+    fi
 
     if [ "$(/usr/local/bin/proxiport --version)" = "proxiport 0.9.1" ]; then
         pass "the updater installed the new release"
     else
         fail "the updater did not install the new release: $(/usr/local/bin/proxiport --version)"
+    fi
+    # The updater itself runs the new binary once (`You are now running`), so
+    # the owner log must hold that record on top of the old binary's version
+    # probe and the line above.
+    if [ "$(grep -c '^0:0$' /run/pp-stub-owner)" -ge 3 ]; then
+        pass "the updater ran the new binary and it was root's"
+    else
+        fail "expected at least three root-owned --version records, got: $(tr '\n' ' ' < /run/pp-stub-owner)"
     fi
     check_ownership
 else
