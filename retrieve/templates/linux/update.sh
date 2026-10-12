@@ -66,7 +66,13 @@ download_new_version() {
     # (SHA-256 plus, when cosign is present, the signature over checksums.txt).
     verify_release_asset "${TEMP}" "${ASSET}"
 
-    tar xzf "${TEMP}/${ASSET}" -C "$TEMP" proxiport
+    # -o: do not restore the archive's owner and group, and make the binary
+    # root's 0755 here, inside the private temp directory, before it is moved
+    # into /usr/local/bin and run. Extracting as root used to hand it to
+    # whichever local account has the uid the archive was built with.
+    tar -xzof "${TEMP}/${ASSET}" -C "$TEMP" proxiport
+    chown root:root "${TEMP}/proxiport"
+    chmod 0755 "${TEMP}/proxiport"
     rm -f "${TEMP}/${ASSET}"
     echo "$TEMP/proxiport"
 }

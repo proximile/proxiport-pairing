@@ -19,6 +19,14 @@
 #           `proxiport` account. The installer must LEAVE IT THERE -- moving a
 #           running agent out of its own directories is worse than the
 #           exposure -- and must say so out loud.
+#   uninstall  the agent uninstaller on a host that also runs the server; it
+#           must not touch anything of the server's.
+#   update  the updater's tarball path on an installed agent.
+#
+# Every scenario also asserts ownership of what the scripts install. The stub
+# release archives carry uid/gid 1001 on every member, as an archive built on a
+# CI runner does, and a local account holds that uid: nothing root runs or
+# writes a credential into may be that account's, at any point.
 #
 # Needs root and a throwaway filesystem, so it runs itself inside a container
 # unless it is already root. It never skips: no root and no docker is exit 1,
@@ -40,7 +48,7 @@ if [ "$(id -u)" -ne 0 ]; then
         exit 1
     fi
     rc=0
-    for scenario in fresh legacy uninstall; do
+    for scenario in fresh legacy uninstall update; do
         echo "linux_installer_test: scenario '$scenario' in $IMAGE"
         docker run --rm -v "$REPO_ROOT":/src:ro -w /src \
             -e "PAIRING_INSTALLER_TEST_SCENARIO=$scenario" "$IMAGE" \
@@ -113,21 +121,30 @@ render() {
 
 RENDERED="$WORK/proxiport-installer.sh"
 UNINSTALLER="$WORK/proxiport-uninstaller.sh"
+UPDATER="$WORK/proxiport-updater.sh"
 render installerHandler.go  templates/linux/install.sh   "$RENDERED"
 render uninstallHandler.go  templates/linux/uninstall.sh "$UNINSTALLER"
+render updateHandler.go     templates/linux/update.sh    "$UPDATER"
 
 # ---------------------------------------------------------------------------
 # A stub release: the installer downloads a tar.gz over HTTP with -z, unpacks
 # `proxiport` and `proxiport.example.conf`, runs `--version`, and then asks the
 # binary to install a service unit. The stub does all of that and records the
-# account it was told to use, which is the thing under test.
+# account it was told to use, which is the thing under test. It also records
+# who owned it each time `--version` ran: root executes the binary straight
+# after unpacking it, so that is where an archive's uid would do its damage.
 # ---------------------------------------------------------------------------
+# A local account that happens to hold the uid the archives carry.
+useradd --uid 1001 --system --no-create-home --shell /usr/sbin/nologin bystander
+
 mkdir -p "$WORK/pkg" "$WORK/srv"
 cat > "$WORK/pkg/proxiport" <<'STUB'
 #!/bin/sh
 # Stub ProxiPort agent. Implements only what the installer calls.
 case "$1" in
-  --version) echo "proxiport 0.9.0"; exit 0 ;;
+  --version)
+    stat -c '%u:%g' "$0" >> /run/pp-stub-owner
+    echo "proxiport STUB_VERSION"; exit 0 ;;
 esac
 svc_user=""
 config=""
@@ -182,8 +199,22 @@ cat > "$WORK/pkg/proxiport.example.conf" <<'CONF'
   enabled = true
 CONF
 ARCH=$(uname -m)
-tar -C "$WORK/pkg" -czf "$WORK/srv/proxiport_0.9.0_linux_${ARCH}.tar.gz" \
-    proxiport proxiport.example.conf
+# make_release <version>: the archive for one stub release, every member owned
+# by uid/gid 1001 as a runner-built archive is, plus its checksums.txt line
+# for the updater's verification step.
+make_release() {
+    _v="$1"; _d="$WORK/pkg-$_v"
+    mkdir -p "$_d"
+    sed "s/STUB_VERSION/$_v/" "$WORK/pkg/proxiport" > "$_d/proxiport"
+    chmod 0755 "$_d/proxiport"
+    cp "$WORK/pkg/proxiport.example.conf" "$_d/proxiport.example.conf"
+    tar -C "$_d" --owner=1001 --group=1001 --numeric-owner \
+        -czf "$WORK/srv/proxiport_${_v}_linux_${ARCH}.tar.gz" proxiport proxiport.example.conf
+    (cd "$WORK/srv" && sha256sum "proxiport_${_v}_linux_${ARCH}.tar.gz" >> checksums.txt)
+}
+make_release 0.9.0
+make_release 0.9.1
+: > /run/pp-stub-owner
 
 # busybox httpd serves the tarball AND answers the installer's reachability
 # probe, so CONNECT_URL and the package URL are the same origin.
@@ -288,6 +319,29 @@ printf '  agent account: %s\n' "$unit_user"
 as_agent_can_read() { su -s /bin/sh "$1" -c "cat '$2' >/dev/null 2>&1"; }
 as_agent_can_write_dir() { su -s /bin/sh "$1" -c "touch '$2/.probe' 2>/dev/null"; }
 
+# The archive carried uid 1001. Nothing root runs may have been that uid's.
+check_ownership() {
+    local bin=/usr/local/bin/proxiport
+    if [ "$(stat -c '%U:%G %a' "$bin")" = "root:root 755" ]; then
+        pass "$bin is root:root 0755"
+    else
+        fail "$bin is $(stat -c '%U:%G %a' "$bin"), not root's"
+    fi
+    if [ ! -s /run/pp-stub-owner ]; then
+        fail "the stub binary never recorded who owned it, so the check below is vacuous"
+    elif grep -qv '^0:0$' /run/pp-stub-owner; then
+        fail "root ran the agent binary while it was owned by uid:gid $(grep -v '^0:0$' /run/pp-stub-owner | sort -u | tr '\n' ' ')"
+    else
+        pass "root never ran the agent binary while another account owned it"
+    fi
+    if [ "$(stat -c %U /etc/proxiport/proxiport.conf)" = "bystander" ]; then
+        fail "/etc/proxiport/proxiport.conf, which holds the credential, belongs to the archive's uid"
+    else
+        pass "/etc/proxiport/proxiport.conf does not belong to the archive's uid"
+    fi
+}
+check_ownership
+
 if [ "$SCENARIO" = "fresh" ]; then
     if [ "$unit_user" = "proxiport" ]; then
         fail "the agent was installed into the ProxiPort server's account"
@@ -373,6 +427,51 @@ elif [ "$SCENARIO" = "uninstall" ]; then
     else
         pass "the agent binary was removed"
     fi
+elif [ "$SCENARIO" = "update" ]; then
+    # The updater's tarball path: resolve the latest release, download the
+    # archive and its checksums, verify, unpack and move the binary into
+    # place. The release lookups go through a curl stub that answers from the
+    # stub releases; everything else reaches the real curl.
+    cat > /usr/local/sbin/curl <<'CURL'
+#!/bin/sh
+out=""; url=""; prev=""
+for a in "$@"; do
+  case "$prev" in -o) out="$a" ;; esac
+  case "$a" in http://*|https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  *api.github.com/repos/proximile/proxiport/releases/latest)
+    body='{"tag_name": "v0.9.1"}'
+    if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; else printf '%s\n' "$body"; fi
+    exit 0 ;;
+  https://github.com/proximile/proxiport/releases/download/*)
+    f="/tmp/installer-test/srv/$(basename "$url")"
+    [ -f "$f" ] || exit 22
+    if [ -n "$out" ]; then cp "$f" "$out"; else cat "$f"; fi
+    exit 0 ;;
+esac
+exec /usr/bin/curl "$@"
+CURL
+    chmod 0755 /usr/local/sbin/curl
+    : > /run/pp-stub-owner
+
+    set +e
+    sh "$UPDATER" > "$WORK/update.log" 2>&1
+    update_rc=$?
+    set -e
+    if [ "$update_rc" -ne 0 ]; then
+        echo "linux_installer_test: the updater exited $update_rc:" >&2
+        tail -40 "$WORK/update.log" >&2
+        exit 1
+    fi
+
+    if [ "$(/usr/local/bin/proxiport --version)" = "proxiport 0.9.1" ]; then
+        pass "the updater installed the new release"
+    else
+        fail "the updater did not install the new release: $(/usr/local/bin/proxiport --version)"
+    fi
+    check_ownership
 else
     if [ "$unit_user" = "proxiport" ]; then
         pass "an existing agent install keeps its account ($unit_user)"
