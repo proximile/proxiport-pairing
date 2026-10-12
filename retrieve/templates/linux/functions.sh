@@ -151,7 +151,10 @@ resolve_account() {
 }
 
 set_toml_key() {
-  _stk_tmp="${CONFIG_FILE}.stk.$$"
+  # The staging copy holds the whole config, credential included, so it must
+  # never be readable by anyone else: mktemp creates it 0600 (a plain redirect
+  # used to create it with the umask, 0644 under sudo).
+  _stk_tmp=$(umask 077; mktemp "${CONFIG_FILE}.stk.XXXXXX") || return 1
   STK_SECT="$1" STK_KEY="$2" STK_VAL="$3" awk '
     BEGIN {
       sect = ENVIRON["STK_SECT"]; key = ENVIRON["STK_KEY"]; val = ENVIRON["STK_VAL"]
@@ -192,7 +195,8 @@ uninstall() {
   stop_proxiport >/dev/null 2>&1 || true
   rc-service proxiport stop >/dev/null 2>&1 || true
   pkill -9 proxiport >/dev/null 2>&1 || true
-  proxiport --service uninstall >/dev/null 2>&1 || true
+  # Explicit paths: sudo's secure_path on RHEL-family hosts has no /usr/local/bin.
+  { /usr/local/bin/proxiport --service uninstall || /usr/bin/proxiport --service uninstall; } >/dev/null 2>&1 || true
   FILES="/usr/local/bin/proxiport
     /etc/systemd/system/proxiport.service
     /usr/lib/systemd/system/proxiport.service
@@ -444,7 +448,10 @@ check_prerequisites() {
 }
 
 is_terminal() {
-  if echo "$TERM" | grep -q "^xterm"; then
+  # A terminal is one we can actually ask on: stdin is a tty. $TERM says
+  # nothing about that (a cron job exports it; a console session with
+  # TERM=linux is still interactive).
+  if [ -t 0 ]; then
     return 0
   else
     echo 1>&2 "You are not on a terminal. Please use command line switches to avoid interactive questions."

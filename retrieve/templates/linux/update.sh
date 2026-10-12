@@ -176,6 +176,8 @@ update() {
   if [ -n "$PKG_URL" ]; then
       # Update from a user-supplied package URL (-z). No version check.
       abort_on_proxiport_subprocess
+      check_scripts
+      check_sudo
       RESTART_IN="foreground"
       case "$PKG_URL" in
         *.deb)
@@ -200,6 +202,11 @@ update() {
           throw_info "Nothing to do. ProxiPort is on the latest version ${CURRENT_VERSION}."
           exit 0
       fi
+      # Settle the questions (or refuse for want of a switch) before the
+      # binary is touched: a refusal after the swap left the new binary on
+      # disk, the old process running, and the next run saying "Nothing to do".
+      check_scripts
+      check_sudo
       if is_pkg_managed_deb; then
           abort_on_proxiport_subprocess
           RESTART_IN="foreground"
@@ -219,15 +226,14 @@ update() {
           RESTART_IN="background"
       fi
   fi
-  check_scripts
-  check_sudo
   detect_interpreters
   enable_monitoring
   enable_lan_monitoring
   enable_file_reception
   insert_watchdog
 
-  throw_info "You are now running $(proxiport --version)"
+  # Explicit path: sudo's secure_path on RHEL-family hosts has no /usr/local/bin.
+  throw_info "You are now running proxiport $(current_version)"
 
   restart_proxiport $RESTART_IN
   if wait_for_proxiport; then
@@ -249,6 +255,15 @@ ask_yes_no() {
     printf "%s" "$1"
   fi
   echo " (y/n)"
+  # Read the answer from the terminal, not from whatever stdin is: a script
+  # piped into sh, or run with stdin closed, used to fall out of this loop at
+  # end-of-file with status 0 and so answered "yes" to granting the agent full
+  # sudo. No readable terminal, or end-of-file, is "no".
+  if [ -r /dev/tty ]; then
+    _ayn_in=/dev/tty
+  else
+    _ayn_in=/dev/stdin
+  fi
   while read -r INPUT; do
     if echo "$INPUT" | grep -q "^[Yy]"; then
       return 0
@@ -256,7 +271,8 @@ ask_yes_no() {
       return 1
     fi
     echo "Type (y/n) or abort with Ctrl-C"
-  done
+  done < "$_ayn_in"
+  return 1
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
@@ -293,8 +309,7 @@ check_scripts() {
     true
   else
     echo 1>&2 "Please use the switches -x/-d to enable or disable script execution."
-    help
-    # shellcheck disable=SC2317  # Don't warn about unreachable commands in this function
+    help >&2
     exit 1
   fi
   if ask_yes_no "Do you want to activate script execution?"; then
@@ -314,13 +329,14 @@ check_sudo() {
   if [ "$ENABLE_SUDO" -eq 1 ]; then
     create_sudoers_all
     return 0
+  elif [ "$ENABLE_SUDO" -eq 0 ]; then
+    return 0
   fi
   if is_terminal; then
     true
   else
     echo 1>&2 "Please use the switches -s/-n to enable or disable sudo rights."
-    help
-    # shellcheck disable=SC2317  # Don't warn about unreachable commands in this function
+    help >&2
     exit 1
   fi
   if ask_yes_no "Do you want to activate sudo rights for ProxiPort remote script execution?"; then
@@ -398,7 +414,9 @@ insert_watchdog() {
     # Watchdog integration already present
     return 0
   else
-    WATCHDOG_SNIPPET=$(sed ':a $!{N; ba}; s/\n/\\n/g'<<EOF
+    # Plain awk, not GNU sed: busybox sed rejects the label syntax the old
+    # version used and failed the update after the binary had been swapped.
+    WATCHDOG_SNIPPET=$(cat <<EOF
   ## Write a state file to {data_dir}/state.json that can be evaluated by external watchdog implementations.
   ## On Linux this also enables the systemd watchdog integration using the systemd notify socket.
   ## Requires max_retry_count = -1 and keep_alive > 0
@@ -407,7 +425,12 @@ insert_watchdog() {
   #watchdog_integration = false
 EOF
 )
-    sed -i "/max_retry_interval/a\\\n${WATCHDOG_SNIPPET}" "$CONFIG_FILE"
+    _wd_tmp=$(umask 077; mktemp "${CONFIG_FILE}.wd.XXXXXX") || return 1
+    WD_SNIPPET="$WATCHDOG_SNIPPET" awk '
+      { print }
+      /max_retry_interval/ && !done { print ENVIRON["WD_SNIPPET"]; done = 1 }
+    ' "$CONFIG_FILE" > "$_wd_tmp" && cat "$_wd_tmp" > "$CONFIG_FILE"
+    rm -f "$_wd_tmp"
   fi
 }
 
@@ -480,10 +503,10 @@ Options:
 -x  enable script execution in proxiport.conf
 -d  disable script execution in proxiport.conf
 -s  create sudo rules to grant full root access to the proxiport user
+-n  do not create sudo rules (the agent keeps whatever rights it has)
 -z  Download the proxiport client deb|rpm from the given URL instead of using GitHub releases.
     See environment variables.
 EOF
-  exit 0
 }
 
 #
@@ -494,7 +517,7 @@ ENABLE_SUDO=2
 ENABLE_SCRIPTS=undef
 ENABLE_FILEREC=0
 ENABLE_FILEREC_SUDO=0
-while getopts "hcuxdsrbz:" opt; do
+while getopts "hcuxdsnrbz:" opt; do
   case "${opt}" in
 
   h) ACTION=help ;;
@@ -503,6 +526,7 @@ while getopts "hcuxdsrbz:" opt; do
   x) ENABLE_SCRIPTS=true ;;
   d) ENABLE_SCRIPTS=false ;;
   s) ENABLE_SUDO=1 ;;
+  n) ENABLE_SUDO=0 ;;
   r) export ENABLE_FILEREC=1 ;;
   b) export ENABLE_FILEREC_SUDO=1 ;;
   z) export PKG_URL="${OPTARG}" ;;
