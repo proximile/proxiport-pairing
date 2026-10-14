@@ -173,6 +173,7 @@ chmod 0755 "$WORK/pkg/proxiport"
 cat > "$WORK/pkg/proxiport.example.conf" <<'CONF'
 [client]
   server = "http://127.0.0.1:8099"
+  #max_retry_interval = 5m
   #auth = "user:password"
   #fingerprint = ""
   #id = ""
@@ -315,11 +316,28 @@ Group=proxiport
 OLDUNIT
     install -d -o proxiport -g root -m 0700 /var/lib/proxiport/scripts
     printf '[client]\n  server = "http://127.0.0.1:8099"\n' > /etc/proxiport/proxiport.conf
-    # The earlier installer left the config 0640 and owned by the agent's
-    # account; that is the state the installer finds on such a host.
+    # The earlier installer left the config owned by the agent's account; an
+    # install that aborted before set_file_and_dir_owner, or a file placed by
+    # hand, left it world-readable. The installer must fix both before the
+    # credential goes in, so plant the worst case.
     chown proxiport:root /etc/proxiport/proxiport.conf
-    chmod 0640 /etc/proxiport/proxiport.conf
+    chmod 0644 /etc/proxiport/proxiport.conf
 fi
+
+# Another account watches /etc/proxiport for the staging copies the scripts
+# write while editing the config (set_toml_key, insert_watchdog) and records
+# every one it could read. The config holds the credential from the first
+# set_toml_key on, so a readable copy is a leak.
+: > /tmp/pp-stk-leak; chmod 0666 /tmp/pp-stk-leak
+# setpriv rather than su: no PAM session, so nothing is printed when the
+# loop is killed at the end.
+setpriv --reuid=bystander --regid=bystander --init-groups sh -c 'while :; do
+    for f in /etc/proxiport/*.stk.* /etc/proxiport/*.wd.* /etc/proxiport/*.tmp*; do
+        [ -e "$f" ] || continue
+        if cat "$f" >/dev/null 2>&1; then echo "$f" >> /tmp/pp-stk-leak; fi
+    done
+done' &
+STK_WATCH=$!
 
 # ---------------------------------------------------------------------------
 # Run the real installer. -p forces the tar.gz path, -z points it at the stub
@@ -372,6 +390,11 @@ check_ownership() {
         fail "the credential was written into a config that was $(sort -u /run/pp-conf-owner | tr '\n' ' ')"
     else
         pass "the config was neither the archive uid's nor world-readable while the credential went in ($(sort -u /run/pp-conf-owner | tr '\n' ' '))"
+    fi
+    if [ -s /tmp/pp-stk-leak ]; then
+        fail "another account could read a staging copy of the config: $(sort -u /tmp/pp-stk-leak | tr '\n' ' ')"
+    else
+        pass "no staging copy of the config was readable by another account"
     fi
 }
 check_ownership
@@ -490,11 +513,43 @@ CURL
     chmod 0755 /usr/local/sbin/curl
     : > /run/pp-stub-owner
 
-    # -s answers the sudo question up front: without a terminal the updater
-    # otherwise prints its usage and exits 0 after replacing the binary, which
-    # would make everything below vacuous.
+    # ask_yes_no on its own: at end-of-file it must answer "no". It used to
+    # fall out of its read loop with status 0, i.e. "yes", which granted the
+    # agent full sudo whenever the updater was piped into sh.
+    eval "$(sed -n '/^ask_yes_no() {/,/^}/p' "$UPDATER")"
+    if TERM=xterm ask_yes_no "grant everything?" </dev/null >/dev/null 2>&1; then
+        fail "ask_yes_no answered yes at end-of-file"
+    else
+        pass "ask_yes_no answers no at end-of-file"
+    fi
+
+    # Piped into sh with no switches, as the hint in the script itself
+    # suggests running it: no terminal to ask on, so it must refuse -- and
+    # refuse before the binary is replaced, not after.
     set +e
-    sh "$UPDATER" -s > "$WORK/update.log" 2>&1
+    cat "$UPDATER" | TERM=xterm sh > "$WORK/update-piped.log" 2>&1
+    piped_rc=$?
+    set -e
+    if [ "$piped_rc" -ne 0 ] && grep -q 'Please use the switches' "$WORK/update-piped.log"; then
+        pass "a piped run without switches refuses (exit $piped_rc)"
+    else
+        fail "a piped run without switches did not refuse (exit $piped_rc): $(tail -3 "$WORK/update-piped.log" | tr '\n' '|')"
+    fi
+    if [ -e /etc/sudoers.d/proxiport-all-cmd ]; then
+        fail "the piped run granted the agent full sudo"
+    else
+        pass "the piped run granted nothing"
+    fi
+    if [ "$(/usr/local/bin/proxiport --version)" = "proxiport 0.9.0" ]; then
+        pass "the refused run left the installed binary alone"
+    else
+        fail "the refused run replaced the binary before refusing: $(/usr/local/bin/proxiport --version)"
+    fi
+
+    # -n -d answer both questions with "no" up front, so the run completes
+    # without a terminal and without granting anything.
+    set +e
+    sh "$UPDATER" -n -d > "$WORK/update.log" 2>&1
     update_rc=$?
     set -e
     if [ "$update_rc" -ne 0 ]; then
@@ -513,6 +568,17 @@ CURL
         pass "the updater installed the new release"
     else
         fail "the updater did not install the new release: $(/usr/local/bin/proxiport --version)"
+    fi
+    if [ -e /etc/sudoers.d/proxiport-all-cmd ]; then
+        fail "-n still created the full-sudo rule"
+    else
+        pass "-n created no sudo rule"
+    fi
+    if grep -q 'watchdog_integration' /etc/proxiport/proxiport.conf \
+       && ! grep -q '\\n' /etc/proxiport/proxiport.conf; then
+        pass "the watchdog snippet was inserted as real lines"
+    else
+        fail "the watchdog snippet is missing or mangled: $(grep -n 'watchdog\|\\n' /etc/proxiport/proxiport.conf | tr '\n' '|')"
     fi
     # The updater itself runs the new binary once (`You are now running`), so
     # the owner log must hold that record on top of the old binary's version
@@ -542,6 +608,7 @@ else
     fi
 fi
 
+kill "$STK_WATCH" 2>/dev/null || true
 printf '\n'
 if [ "$failures" -ne 0 ]; then
     printf '%d assertion(s) failed in scenario %s\n' "$failures" "$SCENARIO"

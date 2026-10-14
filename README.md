@@ -83,6 +83,12 @@ cache under `/var/lib/proxiport`.
   server, the installer says so and tells you how to separate them.
 - **`-a <user>`** installs into an account you name; its directories follow
   the name (`/var/lib/<user>`, `/var/log/<user>`).
+- **The binary and the config always belong to root.** The installer and the
+  updater extract the release archive without applying the ownership stored
+  in it, and set `root:root` on `/usr/local/bin/proxiport` and on
+  `/etc/proxiport/proxiport.conf` before moving them into place. A local
+  account that happens to share a uid with the archive's build user never
+  owns what the service runs.
 
 > **If you wrote your own sudo rules, they need updating.** Rules in
 > `/etc/sudoers.d/` are matched by user name, so a rule granting `proxiport`
@@ -101,8 +107,9 @@ iwr https://pairing.proxiport.net/9L6fHH -OutFile proxiport-installer.ps1
 ### Update an existing agent
 
 The update endpoint serves a script that fetches the latest agent
-binary, replaces the on-disk binary, and restarts the service. No
-prior deposit is needed — there are no credentials to embed.
+binary, replaces the on-disk binary (root-owned, like the installer leaves
+it), and restarts the service. No prior deposit is needed — there are no
+credentials to embed.
 
 ```bash
 curl https://pairing.proxiport.net/update -o proxiport-update.sh

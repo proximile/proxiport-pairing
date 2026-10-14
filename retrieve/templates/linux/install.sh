@@ -4,8 +4,10 @@ set -e
 #   DESCRIPTION:  Create a temporary folder and prepare the system to execute the installation
 #----------------------------------------------------------------------------------------------------------------------
 prepare() {
-  test -e "${TMP_FOLDER}" && rm -rf "${TMP_FOLDER}"
-  mkdir "${TMP_FOLDER}"
+  # A private, unpredictable directory (mktemp: 0700, random suffix). The old
+  # fixed /tmp path let any local account block every install by planting an
+  # entry there, and took its mode from the umask.
+  TMP_FOLDER=$(mktemp -d "${TMP_FOLDER}.XXXXXX")
   cd "${TMP_FOLDER}"
 }
 
@@ -203,7 +205,11 @@ install_config() {
     test -e "$CONF_DIR" || mkdir "$CONF_DIR"
     CONFIG_FILE=${CONF_DIR}/${1}.conf
     if [ -e "${CONFIG_FILE}" ]; then
-        true
+        # An existing config (a re-install, or one placed by hand) receives
+        # the credential next; whatever its owner and mode were, make it
+        # root's and unreadable to others before that happens.
+        chown root "${CONFIG_FILE}"
+        chmod o-rwx "${CONFIG_FILE}"
     elif [ -e "${TMP_FOLDER}/proxiport.example.conf" ]; then
         # prepare_config writes the agent credential into this file before
         # set_file_and_dir_owner runs, so it must not spend that time owned by
