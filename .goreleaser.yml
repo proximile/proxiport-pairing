@@ -40,13 +40,33 @@ archives:
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     ids:
       - proxiport-pairing
+    # Archive members are root-owned. Without this the tarball carries the
+    # build runner's uid and gid, and `tar xzf` as root restores them, so an
+    # extracted binary belongs to whichever local account has that uid.
+    builds_info:
+      owner: root
+      group: root
     files:
-      - proxiport-pairing.conf.example
-      - proxiport-pairing.service
-      - LICENSE
-      - LICENSE-MIT
-      - NOTICE
-      - README.md
+      - src: proxiport-pairing.conf.example
+        dst: proxiport-pairing.conf.example
+        info: &root_owned
+          owner: root
+          group: root
+      - src: proxiport-pairing.service
+        dst: proxiport-pairing.service
+        info: *root_owned
+      - src: LICENSE
+        dst: LICENSE
+        info: *root_owned
+      - src: LICENSE-MIT
+        dst: LICENSE-MIT
+        info: *root_owned
+      - src: NOTICE
+        dst: NOTICE
+        info: *root_owned
+      - src: README.md
+        dst: README.md
+        info: *root_owned
 nfpms:
   - id: proxiport-pairing
     package_name: proxiport-pairing
