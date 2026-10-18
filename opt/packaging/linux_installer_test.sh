@@ -22,6 +22,15 @@
 #   uninstall  the agent uninstaller on a host that also runs the server; it
 #           must not touch anything of the server's.
 #   update  the updater's tarball path on an installed agent.
+#   egress  an install with -e <proxy>: the chain must be written into the
+#           config with its companion settings, and every network call the
+#           installer makes must go through that proxy (a real SOCKS5 server
+#           carries them, and a curl shim records each call's arguments).
+#   egress-closed  -o with no tor daemon: the installer must refuse, before
+#           it has downloaded or written anything, and must never have tried
+#           the open internet.
+#   onion   a .onion server with no switches: Tor is the policy by itself,
+#           and the onion name must never reach curl without a proxy.
 #
 # Every scenario also asserts ownership of what the scripts install. The stub
 # release archives carry uid/gid 1001 on every member, as an archive built on a
@@ -48,7 +57,7 @@ if [ "$(id -u)" -ne 0 ]; then
         exit 1
     fi
     rc=0
-    for scenario in fresh legacy uninstall update; do
+    for scenario in fresh legacy uninstall update egress egress-closed onion; do
         echo "linux_installer_test: scenario '$scenario' in $IMAGE"
         docker run --rm -v "$REPO_ROOT":/src:ro -w /src \
             -e "PAIRING_INSTALLER_TEST_SCENARIO=$scenario" "$IMAGE" \
@@ -72,11 +81,20 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 # busybox gives us an HTTP server and pgrep without dragging in python.
 # ---------------------------------------------------------------------------
 export DEBIAN_FRONTEND=noninteractive
+PKGS="curl busybox"
+if [ "$SCENARIO" = "egress" ]; then
+    # A real SOCKS5 server, so the proxied downloads are proxied in fact.
+    PKGS="$PKGS microsocks"
+fi
 if ! apt-get update -qq >/dev/null 2>&1 \
-   || ! apt-get install -y -qq --no-install-recommends curl busybox >/dev/null 2>&1; then
-    echo "linux_installer_test: could not install curl/busybox; refusing to skip." >&2
+   || ! apt-get install -y -qq --no-install-recommends $PKGS >/dev/null 2>&1; then
+    echo "linux_installer_test: could not install $PKGS; refusing to skip." >&2
     exit 1
 fi
+case "$SCENARIO" in
+    onion) CONNECT_URL_FIXTURE="http://pairingtest2b7xq3uvabcdefghijklmnopqrstuvwxyz234567abcdefghijk.onion:80" ;;
+    *)     CONNECT_URL_FIXTURE="http://127.0.0.1:8099" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Render the installer exactly as the service does.
@@ -108,7 +126,7 @@ render() {
     # The four deposit fields Go interpolates. Fixtures, not secrets.
     sed -i \
         -e 's|{{ .Fingerprint}}|aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99|' \
-        -e "s|{{ .ConnectUrl}}|http://127.0.0.1:8099|" \
+        -e "s|{{ .ConnectUrl}}|${CONNECT_URL_FIXTURE}|" \
         -e 's|{{ .ClientId}}|11111111-1111-4111-8111-111111111111|' \
         -e 's|{{ .Password}}|fixture-password|' \
         "$_out"
@@ -182,6 +200,7 @@ cat > "$WORK/pkg/proxiport.example.conf" <<'CONF'
   #tags = []
   #attributes_file_path = "/var/lib/proxiport-agent/client_attributes.(yaml|json|toml)"
   #data_dir = "/var/lib/proxiport-agent"
+  ip_api_url = "http://198.51.100.7/ip"
 
 [logging]
   #log_file = 'C:\Program Files\proxiport\proxiport.log'
@@ -265,6 +284,7 @@ if [ "$1" = "start" ]; then
     if [ -n "$log" ]; then
       mkdir -p "$(dirname "$log")"
       echo "client started, connected" >> "$log"
+      echo "Connected to 127.0.0.1:8099 within 0.3s" >> "$log"
     fi
   fi
 fi
@@ -340,14 +360,92 @@ done' &
 STK_WATCH=$!
 
 # ---------------------------------------------------------------------------
+# The egress scenarios watch what the installer does on the network: a shim
+# in front of curl records every call's arguments, and `egress` runs a real
+# SOCKS5 server for the chain to go through.
+# ---------------------------------------------------------------------------
+INSTALL_FLAGS="-p -x"
+case "$SCENARIO" in
+    egress|egress-closed|onion)
+        cat > /usr/local/sbin/curl <<'CURL'
+#!/bin/sh
+printf 'curl %s\n' "$*" >> /run/pp-curl.log
+exec /usr/bin/curl "$@"
+CURL
+        chmod 0755 /usr/local/sbin/curl
+        : > /run/pp-curl.log
+        ;;
+esac
+case "$SCENARIO" in
+    egress)
+        microsocks -i 127.0.0.1 -p 1080 >/dev/null 2>&1 &
+        sleep 1
+        INSTALL_FLAGS="$INSTALL_FLAGS -e socks5h://127.0.0.1:1080"
+        ;;
+    egress-closed)
+        INSTALL_FLAGS="$INSTALL_FLAGS -o"
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Run the real installer. -p forces the tar.gz path, -z points it at the stub
 # release, -x turns on command execution so the scripts directory is created.
 # ---------------------------------------------------------------------------
 set +e
-sh "$RENDERED" -p -x -z "http://127.0.0.1:8099/proxiport_0.9.0_linux_${ARCH}.tar.gz" \
+# shellcheck disable=SC2086
+sh "$RENDERED" $INSTALL_FLAGS -z "http://127.0.0.1:8099/proxiport_0.9.0_linux_${ARCH}.tar.gz" \
    > "$WORK/install.log" 2>&1
 install_rc=$?
 set -e
+
+if [ "$SCENARIO" = "egress-closed" ] || [ "$SCENARIO" = "onion" ]; then
+    # Both must refuse: there is no tor daemon on 9050. What matters is what
+    # happened before the refusal -- nothing downloaded, nothing written, and
+    # not one curl call without the proxy.
+    if [ "$install_rc" -ne 0 ]; then
+        pass "the installer refused (exit $install_rc)"
+    else
+        fail "the installer completed although the chain could not reach the server"
+    fi
+    if [ -e /usr/local/bin/proxiport ] || [ -e /etc/proxiport/proxiport.conf ]; then
+        fail "the installer downloaded or wrote something before refusing"
+    else
+        pass "nothing was downloaded or written before the refusal"
+    fi
+    if [ ! -s /run/pp-curl.log ]; then
+        fail "curl was never called, so the probe assertions below are vacuous"
+    elif grep -v -- '--proxy socks5h://127.0.0.1:9050' /run/pp-curl.log | grep -q .; then
+        fail "curl was called without the proxy: $(grep -v -- '--proxy socks5h://127.0.0.1:9050' /run/pp-curl.log | tr '\n' '|')"
+    else
+        pass "every curl call carried --proxy socks5h://127.0.0.1:9050"
+    fi
+    if grep -q 'systemctl status tor' "$WORK/install.log"; then
+        pass "the refusal points at the tor daemon"
+    else
+        fail "the refusal does not say what to check: $(tail -5 "$WORK/install.log" | tr '\n' '|')"
+    fi
+    if [ "$SCENARIO" = "onion" ]; then
+        if grep -q 'is a Tor onion service' "$WORK/install.log"; then
+            pass "a .onion server turned Tor on by itself"
+        else
+            fail "the installer did not treat the .onion server as the policy"
+        fi
+        if grep -- '\.onion' /run/pp-curl.log | grep -v -- '--proxy' | grep -q .; then
+            fail "the onion name reached curl without a proxy"
+        else
+            pass "the onion name never reached curl without a proxy"
+        fi
+    fi
+    kill "$STK_WATCH" 2>/dev/null || true
+    printf '\n'
+    if [ "$failures" -ne 0 ]; then
+        printf '%d assertion(s) failed in scenario %s\n' "$failures" "$SCENARIO"
+        exit 1
+    fi
+    printf 'linux installer (%s): all assertions passed\n' "$SCENARIO"
+    exit 0
+fi
+
 if [ "$install_rc" -ne 0 ]; then
     echo "linux_installer_test: the installer exited $install_rc:" >&2
     tail -40 "$WORK/install.log" >&2
@@ -446,6 +544,49 @@ if [ "$SCENARIO" = "fresh" ]; then
     else
         pass "no sudoers rules were written (sudo is absent in this image)"
     fi
+elif [ "$SCENARIO" = "egress" ]; then
+    conf=/etc/proxiport/proxiport.conf
+    if grep -q '^  transports = \["socks5h://127.0.0.1:1080"\]$' "$conf"; then
+        pass "the chain was written as transports"
+    else
+        fail "transports missing or wrong: $(grep -n transports "$conf" | tr '\n' '|')"
+    fi
+    for want in 'require_fingerprint = true' 'updates_interval = 0'; do
+        if grep -q "^  $want\$" "$conf"; then
+            pass "$want was set"
+        else
+            fail "$want was not set: $(grep -n "${want%% *}" "$conf" | tr '\n' '|')"
+        fi
+    done
+    if grep -q '^  #ip_api_url = ' "$conf" && ! grep -q '^[[:space:]]*ip_api_url' "$conf"; then
+        pass "the existing ip_api_url was commented out"
+    else
+        fail "ip_api_url is still active: $(grep -n ip_api_url "$conf" | tr '\n' '|')"
+    fi
+    if [ ! -s /run/pp-curl.log ]; then
+        fail "curl was never called, so the proxy assertions below are vacuous"
+    elif grep -v -- '--proxy socks5h://127.0.0.1:1080' /run/pp-curl.log | grep -q .; then
+        fail "a curl call bypassed the chain: $(grep -v -- '--proxy socks5h://127.0.0.1:1080' /run/pp-curl.log | tr '\n' '|')"
+    else
+        pass "all $(wc -l < /run/pp-curl.log) curl calls went through the proxy"
+    fi
+    if grep -q 'ip-api.com' /run/pp-curl.log; then
+        fail "the geolocation lookup ran"
+    else
+        pass "the geolocation lookup was skipped"
+    fi
+    if grep -q 'city' "/var/lib/$unit_user/client_attributes.json"; then
+        fail "the client was labelled with a city"
+    else
+        pass "no city label was written"
+    fi
+    for want in 'reachable via socks5h://127.0.0.1:1080' 'connected through the egress chain' 'Egress chain: transports'; do
+        if grep -q "$want" "$WORK/install.log"; then
+            pass "the installer reported: $want"
+        else
+            fail "the installer did not report: $want"
+        fi
+    done
 elif [ "$SCENARIO" = "uninstall" ]; then
     # The destructive path. `curl .../uninstall | sudo sh` used to rm -rf
     # /etc/proxiport -- which holds proxiportd.conf -- and delete the

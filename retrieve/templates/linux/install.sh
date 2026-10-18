@@ -21,10 +21,56 @@ clean_up() {
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  add_egress
+#   DESCRIPTION:  Append one entry to the agent's egress chain (-o / -e). The
+#                 entry ends up in the agent config and on a curl command line,
+#                 so it is checked here, as it is parsed, before either.
+#    PARAMETERS:  "direct" or a proxy URL (socks5h://, socks5://, socks://, http://)
+#----------------------------------------------------------------------------------------------------------------------
+add_egress() {
+  _entry="$1"
+  case "$_entry" in
+    direct) ;;
+    socks5h://*|socks5://*|socks://*|http://*) ;;
+    https://*) abort "Egress entry '${_entry}': https:// proxies are not supported. Use socks5h:// or http://." ;;
+    *) abort "Egress entry '${_entry}' is neither 'direct' nor a socks5h://, socks5://, socks:// or http:// URL." ;;
+  esac
+  case "$_entry" in
+    *[[:space:]]*|*\"*|*\'*|*\\*) abort "Egress entry '${_entry}' contains whitespace, a quote or a backslash." ;;
+    socks5h://|socks5://|socks://|http://) abort "Egress entry '${_entry}' has no host." ;;
+  esac
+  for _e in $EGRESS; do
+    if [ "$_e" = "direct" ]; then
+      abort "Egress entry 'direct' must be the last one: nothing can be tried after the open internet."
+    fi
+    if [ "$_e" = "$_entry" ]; then
+      abort "Egress entry '${_entry}' is listed twice."
+    fi
+  done
+  EGRESS="${EGRESS:+${EGRESS} }${_entry}"
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  egress_toml_list
+#   DESCRIPTION:  The chain as the TOML array the agent config takes.
+#----------------------------------------------------------------------------------------------------------------------
+egress_toml_list() {
+  _list=""
+  for _e in $EGRESS; do
+    _list="${_list:+${_list}, }\"${_e}\""
+  done
+  echo "[${_list}]"
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  test_connection
 #   DESCRIPTION:  Check if the ProxiPort server is reachable or abort.
 #----------------------------------------------------------------------------------------------------------------------
 test_connection() {
+  if [ -n "$EGRESS" ]; then
+    test_connection_via_chain
+    return 0
+  fi
   CONN_TEST=$(curl -vIs -m5 "${CONNECT_URL}" 2>&1 || true)
   if echo "${CONN_TEST}" | grep -q "Connected to"; then
     confirm "${CONNECT_URL} is reachable. All good."
@@ -36,6 +82,55 @@ test_connection() {
     echo "* Check if a transparent HTTP proxy is sniffing and blocking connections."
     echo "* Check if a virus scanner is inspecting HTTP connections."
     abort "FATAL: No connection to the ProxiPort server."
+  fi
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  test_connection_via_chain
+#   DESCRIPTION:  Probe the server over each egress entry in order, as the
+#                 agent will, and keep the first that answers. That entry then
+#                 carries every download this installer makes. A .onion server
+#                 is never probed directly: the name alone must not reach the
+#                 host resolver.
+#----------------------------------------------------------------------------------------------------------------------
+test_connection_via_chain() {
+  EGRESS_ACTIVE=""
+  : > "${TMP_FOLDER}/probe.failed"
+  for _entry in $EGRESS; do
+    if [ "$_entry" = "direct" ]; then
+      if is_onion_url "$CONNECT_URL"; then
+        throw_warning "Skipping 'direct': a .onion address is never looked up or dialed outside Tor."
+        continue
+      fi
+      _code=$(curl -sS -I -k -m5 -o /dev/null -w '%{http_code}' "${CONNECT_URL}" 2>"${TMP_FOLDER}/probe.err" || true)
+    else
+      # 20 s rather than 5: a fresh Tor circuit takes a few seconds to build.
+      _code=$(curl -sS -I -k -m20 -o /dev/null -w '%{http_code}' --proxy "$(curl_proxy_url "$_entry")" "${CONNECT_URL}" 2>"${TMP_FOLDER}/probe.err" || true)
+    fi
+    if [ -n "$_code" ] && [ "$_code" != "000" ]; then
+      EGRESS_ACTIVE="$_entry"
+      break
+    fi
+    _why=$(tr '\n' ' ' <"${TMP_FOLDER}/probe.err")
+    printf '  %s: %s\n' "$_entry" "${_why:-no answer}" >>"${TMP_FOLDER}/probe.failed"
+  done
+  if [ -z "$EGRESS_ACTIVE" ]; then
+    echo "Testing the connection to the ProxiPort server on ${CONNECT_URL} failed over every egress entry:"
+    cat "${TMP_FOLDER}/probe.failed"
+    echo "* Is the proxy running, and reachable from this host? For Tor: 'systemctl status tor'."
+    echo "* A VPN must expose a SOCKS5 or HTTP proxy for the agent to use; a bare tunnel interface is not an entry."
+    echo "* Without 'direct' in the chain the open internet is never tried. Add '-e direct' only if that is acceptable."
+    abort "FATAL: No connection to the ProxiPort server."
+  fi
+  if [ "$EGRESS_ACTIVE" = "direct" ]; then
+    EGRESS_PROXY=""
+    EGRESS_PROXY_ENV=""
+    throw_warning "${CONNECT_URL} was reached over the open internet: every proxy before 'direct' failed."
+    throw_warning "The agent will do the same and log 'ANONYMITY DOWNGRADE:' each time. This installer's downloads go direct as well."
+  else
+    EGRESS_PROXY=$(curl_proxy_url "$EGRESS_ACTIVE")
+    EGRESS_PROXY_ENV=$(go_proxy_url "$EGRESS_ACTIVE")
+    confirm "${CONNECT_URL} is reachable via ${EGRESS_ACTIVE}. Downloads take the same path."
   fi
 }
 
@@ -58,7 +153,7 @@ download_and_extract() {
   URL="https://github.com/proximile/proxiport/releases/download/${TAG}/${ASSET}"
   echo "Downloading ${URL}"
   if is_available curl; then
-    curl -fLSs "${URL}" -o proxiport.tar.gz
+    egress_curl -fLSs "${URL}" -o proxiport.tar.gz
   elif is_available wget; then
     wget -q "${URL}" -O proxiport.tar.gz
   else
@@ -90,12 +185,15 @@ verify_signature() {
   fi
   echo "Verifying release signature with cosign"
   _sig_dl() {
-    if is_available curl; then curl -fLSs "$1" -o "$2"; else wget -q "$1" -O "$2"; fi
+    if is_available curl; then egress_curl -fLSs "$1" -o "$2"; else wget -q "$1" -O "$2"; fi
   }
   if ! _sig_dl "${_base}/checksums.txt.sig" checksums.txt.sig || ! _sig_dl "${_base}/checksums.txt.pem" checksums.txt.pem; then
     abort "cosign is installed but the release signature/certificate could not be downloaded — refusing to install."
   fi
-  if ! cosign verify-blob \
+  # cosign fetches the Sigstore trust root and the transparency-log entry on
+  # its own; HTTPS_PROXY (set only with an egress chain) keeps that on the
+  # chosen path too.
+  if ! env ${EGRESS_PROXY_ENV:+"HTTPS_PROXY=${EGRESS_PROXY_ENV}"} cosign verify-blob \
         --certificate checksums.txt.pem \
         --signature checksums.txt.sig \
         --certificate-identity-regexp 'https://github.com/proximile/proxiport' \
@@ -117,7 +215,7 @@ verify_checksum() {
   _sumsurl="https://github.com/proximile/proxiport/releases/download/${_tag}/checksums.txt"
   echo "Verifying checksum against ${_sumsurl}"
   if is_available curl; then
-    curl -fLSs "${_sumsurl}" -o checksums.txt || abort "Could not download checksums.txt — refusing to install an unverified binary."
+    egress_curl -fLSs "${_sumsurl}" -o checksums.txt || abort "Could not download checksums.txt — refusing to install an unverified binary."
   else
     wget -q "${_sumsurl}" -O checksums.txt || abort "Could not download checksums.txt — refusing to install an unverified binary."
   fi
@@ -166,7 +264,7 @@ download_and_extract_from_url() {
     echo "Downloading from ${DOWNLOAD_URL}"
     [ -e "${DL}" ] && rm -f "${DL}"
     # shellcheck disable=SC2086
-    curl -LSs "${DOWNLOAD_URL}" -o "${DL}" ${DL_AUTH}
+    egress_curl -LSs "${DOWNLOAD_URL}" -o "${DL}" ${DL_AUTH}
     echo "Verifying download"
     FILES_IN_TAR=$(tar tzf "${DL}")
     confirm "Package contains $(echo "$FILES_IN_TAR" | wc -w) files"
@@ -326,6 +424,9 @@ prepare_config() {
   set_toml_key logging log_file "\"${LOG_FILE}\""
   set_toml_key client data_dir "\"${DATA_DIR}\""
   sed -i "s|#updates_interval = '4h'|updates_interval = '4h'|g" "$CONFIG_FILE"
+  if [ -n "$EGRESS" ]; then
+    set_egress_config
+  fi
   if [ "$ENABLE_COMMANDS" -eq 1 ]; then
     sed -i "s/#allow = .*/allow = ['.*']/g" "$CONFIG_FILE"
     sed -i "s/#deny = .*/deny = []/g" "$CONFIG_FILE"
@@ -387,6 +488,32 @@ prepare_config() {
 EOF
     sed -i "s|#attributes_file_path = \"/var/.*|attributes_file_path = \"${CLIENT_ATTRIBUTES}\"|g" "$CONFIG_FILE"
     chown "${USER}" "${CLIENT_ATTRIBUTES}"
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  set_egress_config
+#   DESCRIPTION:  Write the egress chain (-o / -e) into the agent config, with
+#                 the settings an agent that hides its address needs next to it.
+#----------------------------------------------------------------------------------------------------------------------
+set_egress_config() {
+  set_toml_key client transports "$(egress_toml_list)"
+  # With a chain the SSH host-key pin is usually all that authenticates the
+  # server (no CA issues a certificate for a .onion), so insist on it.
+  set_toml_key client require_fingerprint true
+  # Package-manager refreshes are subprocesses that no proxy setting can
+  # route, so an agent that must not originate direct traffic keeps them off.
+  set_toml_key client updates_interval 0
+  # The external-IP lookup builds its own connection and the agent refuses to
+  # start with both set; a re-install over an existing config may carry it.
+  sed -i 's/^\([[:space:]]*\)ip_api_url\([[:space:]]*=\)/\1#ip_api_url\2/' "$CONFIG_FILE"
+  confirm "Egress chain written: transports = $(egress_toml_list)"
+  case " $EGRESS " in
+    *" direct "*)
+      throw_warning "'direct' is in the chain: when every proxy fails the agent reaches the server over the open internet and logs 'ANONYMITY DOWNGRADE:' each time. Remove it from transports to fail closed." ;;
+    *)
+      throw_info "No 'direct' entry: this agent never uses the open internet to reach the server. If every proxy is down it keeps retrying them and stays disconnected." ;;
+  esac
+  throw_info "Also set: require_fingerprint = true, updates_interval = 0 (no package-manager refreshes). The geolocation lookup is skipped."
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
@@ -484,7 +611,10 @@ install_client() {
 verify_and_terminate() {
   sleep 1
   if pgrep proxiport >/dev/null 2>&1; then
-    if check_log; then
+    if [ -n "$EGRESS" ] && wait_for_connected; then
+      finish
+      return 0
+    elif check_log; then
       finish
       return 0
     elif [ $? -eq 1 ] && [ "$USE_ALTERNATIVE_MACHINEID" -ne 1 ]; then
@@ -495,6 +625,37 @@ verify_and_terminate() {
     fi
   fi
   fail
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  wait_for_connected
+#   DESCRIPTION:  With an egress chain the first connection takes a while (a
+#                 Tor circuit, a VPN handshake) and the attempts before it are
+#                 logged as errors, which check_log would read as a failed
+#                 install. Give the agent up to 90 s to report "Connected to"
+#                 before the log is judged.
+#----------------------------------------------------------------------------------------------------------------------
+wait_for_connected() {
+  _i=0
+  while [ "$_i" -lt 30 ]; do
+    if [ -e "$LOG_FILE" ] && grep -q "Connected to " "$LOG_FILE"; then
+      if grep -q "ANONYMITY DOWNGRADE:" "$LOG_FILE"; then
+        throw_warning "The agent reached the server over the open internet: every proxy in the chain failed. See 'ANONYMITY DOWNGRADE' in $LOG_FILE."
+      else
+        confirm "The agent connected through the egress chain."
+      fi
+      return 0
+    fi
+    if [ -e "$LOG_FILE" ] && grep -qE "client is already connected|client id .* is already in use" "$LOG_FILE"; then
+      return 1
+    fi
+    if [ "$_i" -eq 0 ]; then
+      echo "Waiting for the agent to connect through the egress chain (up to 90 s) ..."
+    fi
+    _i=$((_i + 1))
+    sleep 3
+  done
+  return 1
 }
 
 use_alternative_machineid() {
@@ -511,6 +672,12 @@ use_alternative_machineid() {
 #   DESCRIPTION:  Retrieve the Country and the city of the currently used public IP address
 #----------------------------------------------------------------------------------------------------------------------
 get_geodata() {
+  # Direct, the lookup hands this host's real address to a third party;
+  # through a proxy it would label the client with the exit's city instead.
+  # With an egress chain there is nothing correct to ask.
+  if [ -n "$EGRESS" ]; then
+    return 1
+  fi
   GEODATA=""
   GEOSERVICE_URL="http://ip-api.com/line/?fields=status,country,city"
   if is_available curl; then
@@ -583,12 +750,21 @@ Options:
 -d Do not use /etc/machine-id to identify this machine. A random UUID will be used instead.
 -p  Do not use the RPM/DEB repository. Forces tar.gz installation.
 -z  Download the proxiport client tar.gz from the given URL instead of using GitHub releases. See environment variables.
+-o  Connect over Tor: reach the server through the local tor daemon (socks5h://127.0.0.1:9050).
+    Shorthand for -e socks5h://127.0.0.1:9050.
+-e <ENTRY> Add an entry to the agent's egress chain, in the order given: a proxy URL
+    (socks5h://host:port or http://host:port, e.g. a VPN sidecar's proxy) or the word 'direct'.
+    The agent tries the entries in order and keeps the first that connects. Without 'direct'
+    it never uses the open internet; 'direct' must come last. This installer's own connection
+    test and downloads take the same path. Also sets require_fingerprint = true and
+    updates_interval = 0, and skips the geolocation lookup. A .onion server implies -o.
 
 Environment variables:
   If PROXIPORT_INSTALLER_DL_USERNAME and PROXIPORT_INSTALLER_DL_PASSWORD are set, downloads of custom packages triggered with
   '-z' are initiated with HTTP basic authentication.
 
-Learn more https://docs.proxiport.net/connecting-clients#advanced-pairing-options
+Learn more https://docs.proxiport.net/install/#agent
+Tor / VPN  https://docs.proxiport.net/anonymous-transport/
 EOF
   exit 0
 }
@@ -598,12 +774,19 @@ EOF
 #   DESCRIPTION:  print some information
 #----------------------------------------------------------------------------------------------------------------------
 finish() {
+  EGRESS_NOTE=""
+  if [ -n "$EGRESS" ]; then
+    EGRESS_NOTE="
+#  Egress chain: transports = $(egress_toml_list), reached via ${EGRESS_ACTIVE}.
+#  Alert on 'ANONYMITY DOWNGRADE:' in the log. https://docs.proxiport.net/anonymous-transport/
+#"
+  fi
   echo "
 #
 #  Installation of proxiport finished.
 #
 #  This client is now connected to $CONNECT_URL
-#
+#${EGRESS_NOTE}
 #  Look at $CONFIG_FILE and explore all options.
 #  ProxiPort runs as the '$USER' account.
 #  Logs are written to $LOG_FILE.
@@ -644,6 +827,11 @@ Try the following to investigate:
     echo "
 4) Check your SELinux settings and create a policy for proxiport."
   fi
+  if [ -n "$EGRESS" ]; then
+    echo "
+Also: the agent connects through ${EGRESS_ACTIVE:-the egress chain}. Check that the proxy (tor, the VPN sidecar)
+is still up, and read the 'Trying to connect' lines in $LOG_FILE."
+  fi
 }
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -676,7 +864,11 @@ ENABLE_FILEREC_SUDO=0
 XTAG=""
 NO_REPO=0
 USER_EXPLICIT=0
-while getopts 'phvfcsuxstldrba:g:z:' opt; do
+EGRESS=""
+EGRESS_ACTIVE=""
+EGRESS_PROXY=""
+EGRESS_PROXY_ENV=""
+while getopts 'phvfcsuxstldrboa:e:g:z:' opt; do
   case "${opt}" in
 
   h)
@@ -701,6 +893,8 @@ while getopts 'phvfcsuxstldrba:g:z:' opt; do
   z) export PKG_URL="${OPTARG}" ;;
   d) MACHINE_ID=$(gen_uuid) ;;
   p) NO_REPO=1 ;;
+  o) add_egress "socks5h://127.0.0.1:9050" ;;
+  e) add_egress "${OPTARG}" ;;
 
   \?)
     echo "Option does not exist."
@@ -709,6 +903,20 @@ while getopts 'phvfcsuxstldrba:g:z:' opt; do
   esac # --- end of case ---
 done
 shift $((OPTIND - 1))
+# A Tor onion service is only reachable through Tor, so a .onion server is
+# the policy by itself. -e still wins, for a tor daemon on another address.
+if [ -z "$EGRESS" ] && is_onion_url "$CONNECT_URL"; then
+  EGRESS="socks5h://127.0.0.1:9050"
+  throw_info "${CONNECT_URL} is a Tor onion service: connecting through the local tor daemon (socks5h://127.0.0.1:9050), as with -o."
+fi
+if [ -n "$EGRESS" ]; then
+  if ! is_available curl; then
+    abort "-o / -e need curl: wget cannot use a SOCKS proxy, so the downloads could not follow the egress chain."
+  fi
+  if [ "$EGRESS" = "direct" ]; then
+    throw_warning "The egress chain is only 'direct', which is how the agent connects anyway. -e is meant for a proxy."
+  fi
+fi
 # Settle USER / DATA_DIR / LOG_DIR before anything reads them: -a has been
 # parsed by now, and an existing install keeps its own account.
 resolve_account

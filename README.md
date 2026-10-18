@@ -97,6 +97,42 @@ cache under `/var/lib/proxiport`.
 > writes itself — `-s` for full sudo, `-b` for file reception, and the
 > package-manager rule for update checks — already name the right account.
 
+#### Pairing over Tor or a VPN
+
+The agent can be told at install time which paths it may use to reach the
+server. Two installer switches write that policy into the agent's config as
+its `transports` list (see the ProxiPort docs on
+[anonymous transport](https://docs.proxiport.net/anonymous-transport/)),
+and the installer follows the same policy for its own connection test and
+downloads:
+
+- `-o` reaches the server through the local tor daemon
+  (`socks5h://127.0.0.1:9050`). Shorthand for `-e socks5h://127.0.0.1:9050`.
+- `-e <entry>` adds one entry to the chain, in the order given: a proxy URL
+  (`socks5h://host:port` or `http://host:port`, a VPN sidecar's proxy for
+  example) or the word `direct`. `direct` must come last, and without it the
+  agent never uses the open internet.
+
+```bash
+# Tor only. Stays disconnected rather than ever dialing the open internet.
+curl --proxy socks5h://127.0.0.1:9050 https://pairing.proxiport.net/9L6fHH -o proxiport-installer.sh
+sudo sh proxiport-installer.sh -o
+
+# A VPN sidecar's proxy first, then Tor, then -- visibly -- the open internet.
+sudo sh proxiport-installer.sh -e socks5h://gluetun:1080 -o -e direct
+```
+
+With a chain the installer also sets `require_fingerprint = true` and
+`updates_interval = 0`, comments out any `ip_api_url` it finds in an
+existing config, skips the geolocation lookup that labels new clients with
+a city, and waits up to 90 s for the first connection, since a Tor circuit
+takes a moment. A server address ending in `.onion` implies `-o`. Fetching
+the installer through the same proxy, as above, keeps the pairing request
+off the open internet too. `sh proxiport-installer.sh -h` lists every
+switch.
+
+The Windows installer does not have these switches yet.
+
 ### Pair (Windows)
 
 ```powershell

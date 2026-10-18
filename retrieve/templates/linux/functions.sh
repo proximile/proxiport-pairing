@@ -68,6 +68,63 @@ is_available() {
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  egress_curl
+#   DESCRIPTION:  curl, over the egress path the installer's connection test
+#                 settled on (EGRESS_PROXY; empty means no proxy). Every
+#                 download the scripts make goes through here, so nothing they
+#                 fetch travels a path the agent itself would not use.
+#----------------------------------------------------------------------------------------------------------------------
+egress_curl() {
+  if [ -n "${EGRESS_PROXY:-}" ]; then
+    curl --proxy "${EGRESS_PROXY}" "$@"
+  else
+    curl "$@"
+  fi
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  curl_proxy_url
+#   DESCRIPTION:  The agent reads socks:// and socks5:// as socks5h:// (it always
+#                 hands the hostname to the proxy). curl does not: its socks5://
+#                 resolves locally, which would disclose a .onion name to the
+#                 host resolver. Give curl the socks5h:// spelling.
+#----------------------------------------------------------------------------------------------------------------------
+curl_proxy_url() {
+  case "$1" in
+    socks5://*) echo "socks5h://${1#socks5://}" ;;
+    socks://*)  echo "socks5h://${1#socks://}" ;;
+    *)          echo "$1" ;;
+  esac
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  go_proxy_url
+#   DESCRIPTION:  The same entry for a Go program's HTTPS_PROXY (cosign): Go
+#                 spells SOCKS as socks5:// and hands the hostname to the proxy.
+#----------------------------------------------------------------------------------------------------------------------
+go_proxy_url() {
+  case "$1" in
+    socks5h://*) echo "socks5://${1#socks5h://}" ;;
+    socks://*)   echo "socks5://${1#socks://}" ;;
+    *)           echo "$1" ;;
+  esac
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  is_onion_url
+#   DESCRIPTION:  True when the URL's host is a Tor onion service.
+#----------------------------------------------------------------------------------------------------------------------
+is_onion_url() {
+  _h="${1#*://}"
+  _h="${_h%%/*}"
+  _h="${_h%%:*}"
+  case "$_h" in
+    *.onion) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  set_toml_key
 #   DESCRIPTION:  set_toml_key <section> <key> <value>
 #                 Set "<key> = <value>" inside the [<section>] table of
@@ -633,8 +690,11 @@ gen_uuid() {
     dbus-uuidgen
     return 0
   fi
-  # Use a internet-based fallback
-  curl -s https://www.uuidtools.com/api/generate/v4 | tr -d '"[]'
+  # Last resort, made locally. This used to ask a web service, which told a
+  # third party this host's address -- the one thing an installer run with an
+  # egress chain must never do.
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n' \
+    | sed 's/^\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{12\}\)$/\1-\2-\3-\4-\5/'
 }
 
 get_ip_from_fqdn() {
@@ -810,7 +870,7 @@ download_pkg_url() {
     throw_info "Downloading from ${PKG_URL} ..."
     PKG_DOWNLOAD=$(mktemp)
     # shellcheck disable=SC2086
-    curl -LSs "${PKG_URL}" ${DL_AUTH} >${PKG_DOWNLOAD}
+    egress_curl -LSs "${PKG_URL}" ${DL_AUTH} >${PKG_DOWNLOAD}
     if [ -n "$(find "${PKG_DOWNLOAD}" -empty)" ]; then
         rm -f "${PKG_DOWNLOAD}"
         throw_fatal "Download to ${PKG_DOWNLOAD} failed"
@@ -888,10 +948,10 @@ goreleaser_arch() {
 #                 API call fails (rate-limited unauthenticated).
 #----------------------------------------------------------------------------------------------------------------------
 latest_release_tag() {
-  TAG=$(curl -fsS "https://api.github.com/repos/proximile/proxiport/releases/latest" 2>/dev/null \
+  TAG=$(egress_curl -fsS "https://api.github.com/repos/proximile/proxiport/releases/latest" 2>/dev/null \
         | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
   if [ -z "$TAG" ]; then
-    TAG=$(curl -sIL "https://github.com/proximile/proxiport/releases/latest" \
+    TAG=$(egress_curl -sIL "https://github.com/proximile/proxiport/releases/latest" \
           | sed -n 's@^location: *.*/tag/\([^/[:space:]]*\).*@\1@Ip' | tail -1)
   fi
   if [ -z "$TAG" ]; then
