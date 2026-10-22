@@ -26,13 +26,20 @@ write-up to the upstream advisory.
 
 ## Scope
 
-In scope:
+In scope: all source in this repository, including:
 
-- the pairing-service HTTP handlers (`deposit`, `retrieve` packages)
+- the HTTP entry point and routing (`cmd/proxiport-pairing`), including
+  the deposit bearer-token gate
+- the deposit and retrieve handlers (`deposit`, `retrieve` packages)
 - the installer-script templates served by the `retrieve` handlers
   (`retrieve/templates/`)
-- the configuration loader
-- the systemd unit shipped with the service
+- the pairing-code store and its single-use guarantee (`internal/cache`)
+- the per-IP rate limiter and its trusted-proxy / X-Forwarded-For
+  handling (`internal/ratelimit`)
+- the CORS preflight handler (`cors`)
+- the configuration loader (`internal/config`)
+- the systemd unit and the package install/remove scripts
+  (`opt/systemd/`, `opt/packaging/`)
 
 Out of scope:
 

@@ -49,19 +49,21 @@ Response:
 
 ```json
 {
-  "pairing_code": "9L6fHH",
+  "pairing_code": "9L6fHHk",
   "expires": "2026-05-13T11:39:04Z",
   "installers": {
-    "linux":   "curl https://pairing.proxiport.net/9L6fHH > proxiport-installer.sh\nsudo sh proxiport-installer.sh",
-    "windows": "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\n$url=\"https://pairing.proxiport.net/9L6fHH\"\nInvoke-WebRequest -Uri $url -OutFile \"proxiport-installer.ps1\"\npowershell -ExecutionPolicy Bypass -File .\\proxiport-installer.ps1"
+    "linux":   "curl https://pairing.proxiport.net/9L6fHHk > proxiport-installer.sh\nsudo sh proxiport-installer.sh",
+    "windows": "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\n$url=\"https://pairing.proxiport.net/9L6fHHk\"\nInvoke-WebRequest -Uri $url -OutFile \"proxiport-installer.ps1\"\npowershell -ExecutionPolicy Bypass -File .\\proxiport-installer.ps1"
   }
 }
 ```
 
+Pairing codes are 7 characters long.
+
 ### Pair (Linux)
 
 ```bash
-curl https://pairing.proxiport.net/9L6fHH -o proxiport-installer.sh
+curl https://pairing.proxiport.net/9L6fHHk -o proxiport-installer.sh
 sudo sh proxiport-installer.sh
 ```
 
@@ -83,12 +85,16 @@ cache under `/var/lib/proxiport`.
   server, the installer says so and tells you how to separate them.
 - **`-a <user>`** installs into an account you name; its directories follow
   the name (`/var/lib/<user>`, `/var/log/<user>`).
-- **The binary and the config always belong to root.** The installer and the
-  updater extract the release archive without applying the ownership stored
-  in it, and set `root:root` on `/usr/local/bin/proxiport` and on
-  `/etc/proxiport/proxiport.conf` before moving them into place. A local
-  account that happens to share a uid with the archive's build user never
-  owns what the service runs.
+- **The archive's build user never owns what the service runs.** The
+  installer and the updater extract the release archive without applying
+  the ownership stored in it. They make `/usr/local/bin/proxiport`
+  `root:root`, mode 0755, before moving it into place. The installer moves
+  the config into place only after making it root's and unreadable to other
+  users. Once the credential is written, it hands
+  `/etc/proxiport/proxiport.conf` to the agent account as
+  `<agent-user>:root`, mode 0640, so only that account and root can read
+  it. The updater leaves the config alone. A local account that happens to
+  share a uid with the archive's build user never owns either file.
 
 > **If you wrote your own sudo rules, they need updating.** Rules in
 > `/etc/sudoers.d/` are matched by user name, so a rule granting `proxiport`
@@ -115,7 +121,7 @@ downloads:
 
 ```bash
 # Tor only. Stays disconnected rather than ever dialing the open internet.
-curl --proxy socks5h://127.0.0.1:9050 https://pairing.proxiport.net/9L6fHH -o proxiport-installer.sh
+curl --proxy socks5h://127.0.0.1:9050 https://pairing.proxiport.net/9L6fHHk -o proxiport-installer.sh
 sudo sh proxiport-installer.sh -o
 
 # A VPN sidecar's proxy first, then Tor, then -- visibly -- the open internet.
@@ -126,18 +132,24 @@ With a chain the installer also sets `require_fingerprint = true` and
 `updates_interval = 0`, comments out any `ip_api_url` it finds in an
 existing config, skips the geolocation lookup that labels new clients with
 a city, and waits up to 90 s for the first connection, since a Tor circuit
-takes a moment. A server address ending in `.onion` implies `-o`. Fetching
-the installer through the same proxy, as above, keeps the pairing request
-off the open internet too. `sh proxiport-installer.sh -h` lists every
-switch.
+takes a moment. When no `-o` or `-e` switch is given, a server address
+ending in `.onion` implies `-o`; with `-e`, the chain is exactly the entries
+you list. The switches need curl: wget cannot use a SOCKS proxy, so with a
+chain the installer stops if curl is missing. Fetching the installer through
+the same proxy, as above, keeps the pairing request off the open internet
+too. `sh proxiport-installer.sh -h` lists the installer's options.
 
 The Windows installer does not have these switches yet.
 
 ### Pair (Windows)
 
+Run this from an elevated PowerShell (Run as Administrator). The installer
+will not run otherwise.
+
 ```powershell
-iwr https://pairing.proxiport.net/9L6fHH -OutFile proxiport-installer.ps1
-.\proxiport-installer.ps1
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+iwr https://pairing.proxiport.net/9L6fHHk -OutFile proxiport-installer.ps1
+powershell -ExecutionPolicy Bypass -File .\proxiport-installer.ps1
 ```
 
 ### Update an existing agent
@@ -152,6 +164,17 @@ curl https://pairing.proxiport.net/update -o proxiport-update.sh
 sudo sh proxiport-update.sh
 ```
 
+Unless the agent already has full sudo rights
+(`/etc/sudoers.d/proxiport-all-cmd`), the updater asks whether to grant
+them. If `proxiport.conf` has no `[remote-scripts]` section, it also asks
+whether to enable script execution. Both questions are asked before the
+binary is replaced. Give the answers as switches (`-s` or `-n` for sudo,
+`-x` or `-d` for scripts) to run it without a terminal, for example
+`sudo sh proxiport-update.sh -n -d` from cron or ssh. Without them a
+non-interactive run stops with an error. `sh proxiport-update.sh -h` lists
+the remaining options, including `-u` to uninstall and `-z` to install a
+deb/rpm from a given URL.
+
 ## Install and run your own
 
 The pairing service is stateless and tiny — running your own copy is
@@ -164,6 +187,12 @@ VERSION=$(curl -fsS https://api.github.com/repos/proximile/proxiport-pairing/rel
 curl -LO "https://github.com/proximile/proxiport-pairing/releases/download/v${VERSION}/proxiport-pairing_${VERSION}_linux_$(uname -m).deb"
 sudo apt-get install ./proxiport-pairing_${VERSION}_linux_$(uname -m).deb
 ```
+
+`$(uname -m)` matches the release asset names on x86_64, aarch64, riscv64,
+ppc64le and s390x. On 32-bit hosts, replace it with the asset's arch by
+hand: `armv7` or `armv6` on 32-bit ARM (uname reports `armv7l`/`armv6l`),
+and `386` on 32-bit x86 (uname reports `i686`/`i386`). The same applies to
+the tarball below.
 
 Or install by hand from the release tarball:
 
@@ -185,9 +214,26 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now proxiport-pairing
 ```
 
-Edit `/etc/proxiport/proxiport-pairing.conf` to set the public URL
-under which agents will see this service. Terminate TLS in front of
-the service with a reverse proxy.
+Edit `/etc/proxiport/proxiport-pairing.conf` and, in the `[server]`
+section:
+
+- set `url` to the public URL under which agents will see this service;
+- set `deposit_auth_token` to a long random string, and set the same
+  value as `pairing_auth_token` in the `[server]` section of your
+  ProxiPort server's `proxiportd.conf`. Without it, `POST /` is
+  unauthenticated, and anyone who can reach the service can mint
+  installers that carry agent credentials. With it, a deposit without a
+  matching `Authorization: Bearer <token>` header is rejected with 401;
+- set `trusted_proxies` to your reverse proxy's address (`["127.0.0.1"]`
+  for the Caddy example below). The service rate-limits each client IP:
+  deposits at about 1 per second with a burst of 10, installer, update
+  and uninstall fetches at about 2 per second with a burst of 30. Over
+  the limit it returns 429 with a `Retry-After` header. Without
+  `trusted_proxies`, every client behind the proxy shares one bucket;
+- leave `cors_allow_origin` unset unless a browser app calls the
+  service directly.
+
+Terminate TLS in front of the service with a reverse proxy.
 
 ### Reverse proxy example (Caddy)
 

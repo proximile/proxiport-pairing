@@ -50,8 +50,14 @@ so we can sanity-check the direction before you spend time on a patch.
 2. Fork, branch, push, open a PR against `main`.
 3. A `Signed-off-by` trailer (`git commit -s`) is welcome but not
    required; the pull request itself is the inbound = outbound agreement.
-4. Run `go vet ./...` and `go test ./...` locally before pushing. CI
-   runs the same checks.
+4. Run `go vet ./...` and `go test ./...` locally before pushing
+   (install `shellcheck` first, or the shell-script check is skipped).
+   CI runs more than that: `go test -race ./...`, golangci-lint v2.12.2
+   (config in `.golangci.yml`), govulncheck, the container-based
+   packaging and installer tests under `opt/packaging/`, and a Windows
+   job that renders the PowerShell scripts and checks them under
+   Windows PowerShell 5.1. If you have golangci-lint and Docker, run the
+   lint and `bash opt/packaging/*_test.sh` too.
 
 For sensitive disclosures see [`SECURITY.md`](SECURITY.md).
 
