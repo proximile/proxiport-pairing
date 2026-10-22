@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
 
       # The client scripts are assembled per request and selected by user agent,
       # so they are fetched from a locally started service rather than read off
