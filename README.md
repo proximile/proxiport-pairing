@@ -3,6 +3,7 @@
 [![Go Tests](https://img.shields.io/github/actions/workflow/status/proximile/proxiport-pairing/go_test.yml?branch=main&style=for-the-badge&label=Go%20Tests&logo=Go)](https://github.com/proximile/proxiport-pairing/actions/workflows/go_test.yml)
 [![Lint](https://img.shields.io/github/actions/workflow/status/proximile/proxiport-pairing/lint.yml?branch=main&style=for-the-badge&label=Lint&logo=Go)](https://github.com/proximile/proxiport-pairing/actions/workflows/lint.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge)](LICENSE)
+[![ProxiPort on StartupScores](https://startupscores.com/badge/proxiport.svg?style=shield&v=combo&theme=dark)](https://startupscores.com/open-source/proxiport)
 
 A small HTTP service that lets a ProxiPort server hand out one-shot
 installer scripts to brand-new agents. The operator deposits the
