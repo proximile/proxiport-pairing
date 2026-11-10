@@ -14,8 +14,10 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.10'
 
@@ -23,7 +25,26 @@ jobs:
         # v6 + "latest" resolves to the golangci-lint v1 series, which is
         # built with Go 1.24 and refuses go.mod >= 1.25. Pin the same
         # action + version the main proxiport repo uses.
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
           args: --timeout=5m
+
+  workflows:
+    name: Workflow security (zizmor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Static checks on the workflows themselves: template injection, cache
+      # poisoning, persisted credentials, unpinned actions, spoofable bot
+      # checks. Offline, so the result depends only on the checkout. The image
+      # is pinned by digest; bump it deliberately.
+      - name: zizmor
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          ghcr.io/zizmorcore/zizmor:1.32.0@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d
+          --offline --format=github /repo
