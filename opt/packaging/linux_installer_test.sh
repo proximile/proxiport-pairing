@@ -654,6 +654,19 @@ CURL
     chmod 0755 /usr/local/sbin/curl
     : > /run/pp-stub-owner
 
+    # The stub releases aren't signed. The updater refuses a release whose
+    # signature files are missing, so serve placeholders, and let a stub
+    # cosign stand in for the real one: it records its arguments, which shows
+    # the updater asked for the release workflow's signature.
+    : > "$WORK/srv/checksums.txt.sig"
+    : > "$WORK/srv/checksums.txt.pem"
+    cat > /usr/local/sbin/cosign <<'COSIGN'
+#!/bin/sh
+printf '%s\n' "$*" >> /run/pp-cosign.log
+COSIGN
+    chmod 0755 /usr/local/sbin/cosign
+    : > /run/pp-cosign.log
+
     # ask_yes_no on its own: at end-of-file it must answer "no". It used to
     # fall out of its read loop with status 0, i.e. "yes", which granted the
     # agent full sudo whenever the updater was piped into sh.
@@ -709,6 +722,11 @@ CURL
         pass "the updater installed the new release"
     else
         fail "the updater did not install the new release: $(/usr/local/bin/proxiport --version)"
+    fi
+    if grep -qF -- '--certificate-identity-regexp ^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ' /run/pp-cosign.log; then
+        pass "the updater verified the signature against the release workflow"
+    else
+        fail "the updater did not ask cosign for the release workflow's signature: $(tr '\n' '|' < /run/pp-cosign.log)"
     fi
     if [ -e /etc/sudoers.d/proxiport-all-cmd ]; then
         fail "-n still created the full-sudo rule"
