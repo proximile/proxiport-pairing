@@ -175,6 +175,29 @@ non-interactive run stops with an error. `sh proxiport-update.sh -h` lists
 the remaining options, including `-u` to uninstall and `-z` to install a
 deb/rpm from a given URL.
 
+### How downloads are verified
+
+The installer and updater check every downloaded release asset against
+the release's `checksums.txt`. When `cosign` is on the `PATH`, they first
+verify the Sigstore signature over `checksums.txt`, and accept it only if
+the signing certificate belongs to the ProxiPort release workflow running
+for a version tag:
+
+```
+^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$
+```
+
+A signature from any other repository, workflow or branch is rejected,
+and the install or update stops. You can run the same check by hand:
+
+```bash
+cosign verify-blob \
+  --certificate checksums.txt.pem --signature checksums.txt.sig \
+  --certificate-identity-regexp '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+```
+
 ## Install and run your own
 
 The pairing service is stateless and tiny — running your own copy is

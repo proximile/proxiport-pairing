@@ -196,7 +196,7 @@ verify_signature() {
   if ! env ${EGRESS_PROXY_ENV:+"HTTPS_PROXY=${EGRESS_PROXY_ENV}"} cosign verify-blob \
         --certificate checksums.txt.pem \
         --signature checksums.txt.sig \
-        --certificate-identity-regexp 'https://github.com/proximile/proxiport' \
+        --certificate-identity-regexp '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
         --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
         checksums.txt >/dev/null 2>&1; then
     abort "cosign signature verification failed for checksums.txt — refusing to install a possibly-tampered release."

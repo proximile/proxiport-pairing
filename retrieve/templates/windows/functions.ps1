@@ -584,7 +584,7 @@ function Confirm-ReleaseSignature
     & cosign verify-blob `
         --certificate $pemFile `
         --signature $sigFile `
-        --certificate-identity-regexp 'https://github.com/proximile/proxiport' `
+        --certificate-identity-regexp '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' `
         --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' `
         $ChecksumsFile 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0)
