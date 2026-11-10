@@ -32,7 +32,7 @@ verify_release_asset() {
         if ! cosign verify-blob \
               --certificate "${_dir}/checksums.txt.pem" \
               --signature "${_dir}/checksums.txt.sig" \
-              --certificate-identity-regexp 'https://github.com/proximile/proxiport' \
+              --certificate-identity-regexp '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
               "${_dir}/checksums.txt" >/dev/null 2>&1; then
             echo "cosign signature verification failed for checksums.txt; refusing to update a possibly-tampered release" >&2
