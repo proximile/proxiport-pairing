@@ -36,17 +36,26 @@ jobs:
     steps:
       - name: Resolve release tag
         id: tag
+        # The tag reaches the shell through the environment, never by template
+        # expansion into the script, and must be a release version tag. Later
+        # steps read it as $TAG.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" == "release" ]]; then TAG="$RELEASE_TAG"; else TAG="$INPUT_TAG"; fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "not a release version tag: $TAG" >&2
+            exit 1
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
       # cosign verifies the keyless Sigstore signature over checksums.txt before
       # we trust any hash from it.
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Download and verify the .deb from the release
         env:
@@ -54,7 +63,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p stage
-          TAG="${{ steps.tag.outputs.tag }}"
           # Strip leading 'v' from tag; release assets use the bare semver.
           VER="${TAG#v}"
           ASSET="proxiport-pairing_${VER}_linux_x86_64.deb"
@@ -99,7 +107,6 @@ jobs:
 
       - name: Push .deb to droplet and install
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
           VER="${TAG#v}"
           ASSET="proxiport-pairing_${VER}_linux_x86_64.deb"
           SSH="ssh -i ~/.ssh/pairing_deploy -o StrictHostKeyChecking=yes"
@@ -160,4 +167,4 @@ jobs:
               exit 1;
           }
 
-          echo "pairing deploy of ${{ steps.tag.outputs.tag }} OK"
+          echo "pairing deploy of $TAG OK"
