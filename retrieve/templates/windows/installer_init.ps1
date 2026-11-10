@@ -23,6 +23,10 @@
         .PARAMETER d
         Write the config and exit. Service will not be installed. Mainly for testing.
 
+        .PARAMETER k
+        If cosign is not installed and the pinned cosign can't be downloaded, install with the
+        SHA-256 check only instead of stopping.
+
         .INPUTS
         None. You cannot pipe objects.
 
@@ -48,8 +52,11 @@ Param(
     [switch]$r, # Enable file reception
     [string]$g, # Add a tag
     [switch]$d, # Exit after writing the config
-    [string]$pkgUrl
+    [string]$pkgUrl,
+# Without cosign, and when the pinned cosign can't be downloaded, accept the SHA-256 check alone
+    [switch]$k
 )
+$AllowNoCosign = [bool]$k
 if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64")
 {
     Write-Output "Only 64bit Windows on x86_64 supported. Sorry."

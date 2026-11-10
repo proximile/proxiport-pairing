@@ -16,5 +16,8 @@ Param(
 # Enable file reception
     [Switch]$r,
 # Use a specific version from any URL
-    [string]$pkgUrl
+    [string]$pkgUrl,
+# Without cosign, and when the pinned cosign can't be downloaded, accept the SHA-256 check alone
+    [switch]$k
 )
+$AllowNoCosign = [bool]$k

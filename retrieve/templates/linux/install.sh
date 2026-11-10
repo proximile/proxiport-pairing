@@ -170,38 +170,24 @@ download_and_extract() {
 }
 
 # verify_signature <tag>
-# Best-effort Sigstore verification of checksums.txt. When cosign is present it
-# verifies the release's keyless signature over checksums.txt against the pinned
-# signing identity, aborting on failure — this is what defends against a
-# same-channel attacker who can rewrite both the artifact and checksums.txt. When
-# cosign is absent it warns and returns, leaving only the SHA-256 check (which
-# protects against corruption, not a substituted-but-consistent release).
+# Sigstore verification of checksums.txt (verify_checksums_signature): this is
+# what defends against a same-channel attacker who can rewrite both the
+# artifact and checksums.txt. Without cosign on the host a pinned cosign is
+# fetched for the check; only -k lets the install go ahead with the SHA-256
+# check alone, which protects against corruption, not a substituted-but-
+# consistent release.
 verify_signature() {
   _tag="$1"
   _base="https://github.com/proximile/proxiport/releases/download/${_tag}"
-  if ! is_available cosign; then
-    throw_warning "cosign not found — the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification."
-    return 0
-  fi
-  echo "Verifying release signature with cosign"
   _sig_dl() {
     if is_available curl; then egress_curl -fLSs "$1" -o "$2"; else wget -q "$1" -O "$2"; fi
   }
   if ! _sig_dl "${_base}/checksums.txt.sig" checksums.txt.sig || ! _sig_dl "${_base}/checksums.txt.pem" checksums.txt.pem; then
-    abort "cosign is installed but the release signature/certificate could not be downloaded — refusing to install."
+    abort "The release signature/certificate could not be downloaded — refusing to install."
   fi
-  # cosign fetches the Sigstore trust root and the transparency-log entry on
-  # its own; HTTPS_PROXY (set only with an egress chain) keeps that on the
-  # chosen path too.
-  if ! env ${EGRESS_PROXY_ENV:+"HTTPS_PROXY=${EGRESS_PROXY_ENV}"} cosign verify-blob \
-        --certificate checksums.txt.pem \
-        --signature checksums.txt.sig \
-        --certificate-identity-regexp '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
-        --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-        checksums.txt >/dev/null 2>&1; then
-    abort "cosign signature verification failed for checksums.txt — refusing to install a possibly-tampered release."
+  if ! verify_checksums_signature checksums.txt checksums.txt.sig checksums.txt.pem; then
+    abort "The release signature over checksums.txt could not be verified — refusing to install a possibly-tampered release."
   fi
-  echo "Signature OK (cosign)"
 }
 
 # verify_checksum <local-file> <asset-name> <tag>
@@ -749,6 +735,8 @@ Options:
 -g <TAG> Add an extra tag to the client.
 -d Do not use /etc/machine-id to identify this machine. A random UUID will be used instead.
 -p  Do not use the RPM/DEB repository. Forces tar.gz installation.
+-k  If cosign is not installed and the pinned cosign can't be downloaded (no build for this CPU,
+    no network path, under 150 MB free in /var/tmp), install with the SHA-256 check only instead of stopping.
 -z  Download the proxiport client tar.gz from the given URL instead of using GitHub releases. See environment variables.
 -o  Connect over Tor: reach the server through the local tor daemon (socks5h://127.0.0.1:9050).
     Shorthand for -e socks5h://127.0.0.1:9050.
@@ -760,6 +748,7 @@ Options:
     updates_interval = 0, and skips the geolocation lookup. A .onion server implies -o.
 
 Environment variables:
+  PROXIPORT_COSIGN_TMPDIR: where a downloaded cosign is kept during the check (default /var/tmp).
   If PROXIPORT_INSTALLER_DL_USERNAME and PROXIPORT_INSTALLER_DL_PASSWORD are set, downloads of custom packages triggered with
   '-z' are initiated with HTTP basic authentication.
 
@@ -868,7 +857,8 @@ EGRESS=""
 EGRESS_ACTIVE=""
 EGRESS_PROXY=""
 EGRESS_PROXY_ENV=""
-while getopts 'phvfcsuxstldrboa:e:g:z:' opt; do
+ALLOW_NO_COSIGN=0
+while getopts 'phvfcsuxstldrboka:e:g:z:' opt; do
   case "${opt}" in
 
   h)
@@ -893,6 +883,7 @@ while getopts 'phvfcsuxstldrboa:e:g:z:' opt; do
   z) export PKG_URL="${OPTARG}" ;;
   d) MACHINE_ID=$(gen_uuid) ;;
   p) NO_REPO=1 ;;
+  k) ALLOW_NO_COSIGN=1 ;;
   o) add_egress "socks5h://127.0.0.1:9050" ;;
   e) add_egress "${OPTARG}" ;;
 

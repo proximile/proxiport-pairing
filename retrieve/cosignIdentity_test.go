@@ -20,7 +20,12 @@ import (
 // so this pins it exactly rather than checking for "some anchoring".
 const wantProxiportIdentity = `^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$`
 
-var identityFlag = regexp.MustCompile(`--certificate-identity-regexp\s+'([^']*)'`)
+// The signer appears as a quoted literal: a shell RELEASE_SIGNER or
+// PowerShell $ReleaseSigner assignment, or directly after the flag.
+var identityFlag = regexp.MustCompile(`(?:--certificate-identity-regexp\s+|RELEASE_SIGNER=|\$ReleaseSigner = )'([^']*)'`)
+
+// Any use of the flag must take one of those, not some other value.
+var identityUse = regexp.MustCompile(`--certificate-identity-regexp\s+(\S+)`)
 
 func TestCosignIdentityIsAnchoredToTheReleaseWorkflow(t *testing.T) {
 	found := 0
@@ -36,6 +41,13 @@ func TestCosignIdentityIsAnchoredToTheReleaseWorkflow(t *testing.T) {
 		if strings.Contains(string(b), "--certificate-identity ") {
 			t.Errorf("%s: uses --certificate-identity; use the anchored regexp form so every release tag verifies", path)
 		}
+		for _, m := range identityUse.FindAllStringSubmatch(string(b), -1) {
+			switch v := m[1]; {
+			case v == `"${RELEASE_SIGNER}"`, v == "$ReleaseSigner", strings.HasPrefix(v, "'"):
+			default:
+				t.Errorf("%s: cosign identity taken from %s", path, v)
+			}
+		}
 		for _, m := range identityFlag.FindAllStringSubmatch(string(b), -1) {
 			found++
 			if m[1] != wantProxiportIdentity {
@@ -47,9 +59,9 @@ func TestCosignIdentityIsAnchoredToTheReleaseWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// install.sh, update.sh and functions.ps1 each verify once.
-	if found < 3 {
-		t.Fatalf("found %d cosign identity checks in templates, want at least 3", found)
+	// One signer for the Linux scripts, one for Windows.
+	if found < 2 {
+		t.Fatalf("found %d cosign identities in templates, want at least 2", found)
 	}
 }
 

@@ -551,47 +551,97 @@ function Get-LatestReleaseTag
 # published checksums.txt, aborting on mismatch. Mirrors the Linux installer's
 # verify_checksum. checksums.txt is produced by the release pipeline
 # (goreleaser) for every release.
-# Best-effort Sigstore verification of checksums.txt. When cosign is present it
-# verifies the release's keyless signature over checksums.txt against the pinned
-# signing identity, throwing on failure -- this is what defends against a
-# same-channel attacker who can rewrite both the artifact and checksums.txt. When
-# cosign is absent it warns and returns, leaving only the SHA-256 check.
+# Sigstore verification of checksums.txt. The signature is accepted only from
+# the ProxiPort release workflow running for a version tag; this is what defends
+# against a same-channel attacker who can rewrite both the artifact and
+# checksums.txt. Without cosign on the host, the pinned cosign release below is
+# downloaded for this one check, compared against its SHA-256, run, and
+# deleted. If that isn't possible the install stops, unless -k was given, which
+# accepts the SHA-256 check alone. A download that doesn't match the pinned hash
+# always stops it.
+$CosignVersion = 'v3.1.4'
+$CosignWindowsSha256 = 'cbe953787074611f1334cbf37dc1cf953995bb8c45398eb4fc7bb781d29c1f2a'
+$ReleaseSigner = '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+
 function Confirm-ReleaseSignature
 {
     Param(
         [Parameter(Mandatory = $true)][string]$Tag,
         [Parameter(Mandatory = $true)][string]$ChecksumsFile
     )
-    if (-not (Get-Command cosign -ErrorAction SilentlyContinue))
-    {
-        Write-Warning "cosign not found -- the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification."
-        return
-    }
-    Write-Information "* Verifying release signature with cosign"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $base = "https://github.com/proximile/proxiport/releases/download/$( $Tag )"
-    $sigFile = "$( $ChecksumsFile ).sig"
-    $pemFile = "$( $ChecksumsFile ).pem"
+    # Windows PowerShell's progress bar slows a large download many times over.
+    $ProgressPreference = 'SilentlyContinue'
+    # Set from -k by the installer's and updater's parameter blocks.
+    $allowNoCosign = [bool]$script:AllowNoCosign
+    $installed = Get-Command cosign -ErrorAction SilentlyContinue
+    $downloaded = $null
+    if ($installed)
+    {
+        $cosignExe = $installed.Source
+    }
+    else
+    {
+        $candidate = Join-Path ([IO.Path]::GetTempPath()) ("cosign-" + [Guid]::NewGuid().ToString('N') + ".exe")
+        $url = "https://github.com/sigstore/cosign/releases/download/$( $CosignVersion )/cosign-windows-amd64.exe"
+        Write-Information "* cosign not found: downloading cosign $( $CosignVersion ) (about 150 MB) for this check; it is deleted afterwards."
+        try
+        {
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $candidate
+            $downloaded = $candidate
+        }
+        catch
+        {
+            Remove-Item -Force -ErrorAction SilentlyContinue $candidate
+            if ($allowNoCosign)
+            {
+                Write-Warning "No cosign available: the release signature over checksums.txt is NOT verified (-k). Only the SHA-256 check protects this download."
+                return
+            }
+            throw "Could not download $( $url ). Refusing to continue without verifying the release signature. Install cosign, or rerun with -k to accept the checksum check alone."
+        }
+        $got = (Get-FileHash -Algorithm SHA256 -Path $downloaded).Hash.ToLower()
+        if ($got -ne $CosignWindowsSha256)
+        {
+            Remove-Item -Force -ErrorAction SilentlyContinue $downloaded
+            throw "The downloaded cosign does not match its pinned SHA-256 (expected $( $CosignWindowsSha256 ), got $( $got ))."
+        }
+        $cosignExe = $downloaded
+    }
     try
     {
-        Invoke-WebRequest -UseBasicParsing -Uri "$( $base )/checksums.txt.sig" -OutFile $sigFile
-        Invoke-WebRequest -UseBasicParsing -Uri "$( $base )/checksums.txt.pem" -OutFile $pemFile
+        Write-Information "* Verifying release signature with cosign"
+        $base = "https://github.com/proximile/proxiport/releases/download/$( $Tag )"
+        $sigFile = "$( $ChecksumsFile ).sig"
+        $pemFile = "$( $ChecksumsFile ).pem"
+        try
+        {
+            Invoke-WebRequest -UseBasicParsing -Uri "$( $base )/checksums.txt.sig" -OutFile $sigFile
+            Invoke-WebRequest -UseBasicParsing -Uri "$( $base )/checksums.txt.pem" -OutFile $pemFile
+        }
+        catch
+        {
+            throw "The release signature/certificate could not be downloaded -- refusing to install."
+        }
+        & $cosignExe verify-blob `
+            --certificate $pemFile `
+            --signature $sigFile `
+            --certificate-identity-regexp $ReleaseSigner `
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' `
+            $ChecksumsFile 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0)
+        {
+            throw "cosign signature verification failed for checksums.txt -- refusing to install a possibly-tampered release."
+        }
+        Write-Information "* Signature OK (cosign)"
     }
-    catch
+    finally
     {
-        throw "cosign is installed but the release signature/certificate could not be downloaded -- refusing to install."
+        if ($downloaded)
+        {
+            Remove-Item -Force -ErrorAction SilentlyContinue $downloaded
+        }
     }
-    & cosign verify-blob `
-        --certificate $pemFile `
-        --signature $sigFile `
-        --certificate-identity-regexp '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' `
-        --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' `
-        $ChecksumsFile 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0)
-    {
-        throw "cosign signature verification failed for checksums.txt -- refusing to install a possibly-tampered release."
-    }
-    Write-Information "* Signature OK (cosign)"
 }
 
 function Confirm-ReleaseChecksum

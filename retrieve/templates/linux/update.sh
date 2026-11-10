@@ -3,11 +3,12 @@ set -e
 #          NAME:  verify_release_asset
 #   DESCRIPTION:  Verify a downloaded release asset before trusting it, the same
 #                 way the install script does: confirm its SHA-256 against the
-#                 release's checksums.txt and, when cosign is available, verify
-#                 the keyless cosign signature over checksums.txt against the
-#                 pinned signing identity. Aborts the update on any mismatch, and
-#                 degrades to the checksum-only check (with a warning) when cosign
-#                 is absent -- the same trade-off the installer makes. All progress
+#                 release's checksums.txt, and verify the keyless cosign
+#                 signature over checksums.txt against the pinned signing
+#                 identity (verify_checksums_signature, which fetches a pinned
+#                 cosign when none is installed). Aborts the update on any
+#                 mismatch; -k accepts the checksum-only check when no cosign
+#                 can be had, the same as the installer. All progress
 #                 output goes to stderr so this is safe to call inside a command
 #                 substitution (e.g. from download_new_version).
 #    PARAMETERS:  1) directory holding the asset  2) asset file name
@@ -22,24 +23,14 @@ verify_release_asset() {
     # Verify the cosign signature over checksums.txt before trusting any hash it
     # lists. Without this a same-channel attacker able to rewrite both the asset
     # and checksums.txt would defeat the SHA-256 check below.
-    if is_available cosign; then
-        echo "Verifying release signature with cosign" >&2
-        if ! curl -fLs "${_base}/checksums.txt.sig" -o "${_dir}/checksums.txt.sig" \
-          || ! curl -fLs "${_base}/checksums.txt.pem" -o "${_dir}/checksums.txt.pem"; then
-            echo "cosign is installed but the release signature/certificate could not be downloaded; refusing to update" >&2
-            exit 1
-        fi
-        if ! cosign verify-blob \
-              --certificate "${_dir}/checksums.txt.pem" \
-              --signature "${_dir}/checksums.txt.sig" \
-              --certificate-identity-regexp '^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
-              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-              "${_dir}/checksums.txt" >/dev/null 2>&1; then
-            echo "cosign signature verification failed for checksums.txt; refusing to update a possibly-tampered release" >&2
-            exit 1
-        fi
-    else
-        throw_warning "cosign not found -- the release signature over checksums.txt is not being verified. Install cosign for full supply-chain verification." >&2
+    if ! curl -fLs "${_base}/checksums.txt.sig" -o "${_dir}/checksums.txt.sig" \
+      || ! curl -fLs "${_base}/checksums.txt.pem" -o "${_dir}/checksums.txt.pem"; then
+        echo "the release signature/certificate could not be downloaded; refusing to update" >&2
+        exit 1
+    fi
+    if ! verify_checksums_signature "${_dir}/checksums.txt" "${_dir}/checksums.txt.sig" "${_dir}/checksums.txt.pem"; then
+        echo "refusing to update a possibly-tampered release" >&2
+        exit 1
     fi
 
     EXPECTED=$(grep " ${_asset}\$" "${_dir}/checksums.txt" | awk '{print $1}')
@@ -504,6 +495,9 @@ Options:
 -d  disable script execution in proxiport.conf
 -s  create sudo rules to grant full root access to the proxiport user
 -n  do not create sudo rules (the agent keeps whatever rights it has)
+-k  if cosign is not installed and the pinned cosign can't be downloaded, update with the
+    SHA-256 check only instead of stopping. A downloaded cosign (about 150 MB) is kept in
+    \$PROXIPORT_COSIGN_TMPDIR (default /var/tmp) during the check.
 -z  Download the proxiport client deb|rpm from the given URL instead of using GitHub releases.
     See environment variables.
 EOF
@@ -517,7 +511,8 @@ ENABLE_SUDO=2
 ENABLE_SCRIPTS=undef
 ENABLE_FILEREC=0
 ENABLE_FILEREC_SUDO=0
-while getopts "hcuxdsnrbz:" opt; do
+ALLOW_NO_COSIGN=0
+while getopts "hcuxdsnrbkz:" opt; do
   case "${opt}" in
 
   h) ACTION=help ;;
@@ -530,6 +525,7 @@ while getopts "hcuxdsnrbz:" opt; do
   r) export ENABLE_FILEREC=1 ;;
   b) export ENABLE_FILEREC_SUDO=1 ;;
   z) export PKG_URL="${OPTARG}" ;;
+  k) ALLOW_NO_COSIGN=1 ;;
 
   \?)
     echo "Option does not exist."
