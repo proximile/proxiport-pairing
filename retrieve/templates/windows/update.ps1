@@ -10,6 +10,7 @@ Parameters:
 -v [version] Upgrade to the specified version.
 -f  force update without comparing versions
 -r  activate file reception
+-k  without cosign, if the pinned cosign can't be downloaded, update with the SHA-256 check only
 "
     exit
 }

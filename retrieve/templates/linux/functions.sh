@@ -111,6 +111,133 @@ go_proxy_url() {
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  release signature helpers
+#   DESCRIPTION:  The release's checksums.txt carries a keyless Sigstore
+#                 signature. It is accepted only from the ProxiPort release
+#                 workflow running for a version tag (RELEASE_SIGNER).
+#
+#                 When cosign is not installed, a pinned cosign release is
+#                 downloaded for this one check, compared against the SHA-256
+#                 below, used, and deleted. When that isn't possible either
+#                 (no build for this CPU, no network path, no disk space), the
+#                 run stops unless -k was given, which accepts the
+#                 checksum-only check. A downloaded cosign that does not match
+#                 its pinned hash always stops the run.
+#----------------------------------------------------------------------------------------------------------------------
+COSIGN_VERSION="v3.1.4"
+RELEASE_SIGNER='^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+
+# Prints "<asset> <sha256>" for this CPU's cosign build, or fails.
+cosign_release_asset() {
+  case "$(uname -m)" in
+    x86_64|amd64)  echo "cosign-linux-amd64 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa" ;;
+    aarch64|arm64) echo "cosign-linux-arm64 ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2" ;;
+    armv7l|armv7)  echo "cosign-linux-arm 09e77a313910cf5c4774508d85d017d9c60983f41bf657f83ecbd3892f7952cb" ;;
+    ppc64le)       echo "cosign-linux-ppc64le 0887fca23319ea017cc827e6a845ba83722a36bf9e932f35c747ca83c14cec49" ;;
+    riscv64)       echo "cosign-linux-riscv64 24f3865df0fd9b055827b888d56e13583112ac7d4c87b45967af1f0febf35455" ;;
+    s390x)         echo "cosign-linux-s390x 777978d576af893a3daf1fcf3b0e9178cebcbc083a669f6125b6c97b8e1fe433" ;;
+    *) return 1 ;;
+  esac
+}
+
+sha256_of() {
+  if is_available sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  elif is_available shasum; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# Prints the path of a downloaded cosign that matches its pinned hash.
+# Returns 1 when none could be had, 2 when the download did not match.
+fetch_cosign() {
+  if ! _fc_entry=$(cosign_release_asset); then
+    echo >&2 "There is no cosign ${COSIGN_VERSION} build for $(uname -m)."
+    return 1
+  fi
+  _fc_name="${_fc_entry% *}"
+  _fc_want="${_fc_entry#* }"
+  _fc_parent="${PROXIPORT_COSIGN_TMPDIR:-/var/tmp}"
+  if [ ! -w "${_fc_parent}" ]; then _fc_parent=/tmp; fi
+  if ! _fc_dir=$(mktemp -d "${_fc_parent}/cosign.XXXXXX"); then
+    return 1
+  fi
+  _fc_url="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/${_fc_name}"
+  echo >&2 "cosign not found: downloading cosign ${COSIGN_VERSION} (about 150 MB) for this check; it is deleted afterwards."
+  _fc_ok=0
+  if is_available curl; then
+    egress_curl -fLSs "${_fc_url}" -o "${_fc_dir}/cosign" || _fc_ok=1
+  elif is_available wget; then
+    wget -q "${_fc_url}" -O "${_fc_dir}/cosign" || _fc_ok=1
+  else
+    _fc_ok=1
+  fi
+  if [ "${_fc_ok}" -ne 0 ]; then
+    rm -rf "${_fc_dir}"
+    echo >&2 "Could not download ${_fc_url}. It needs about 150 MB free in ${_fc_parent}."
+    return 1
+  fi
+  _fc_got=$(sha256_of "${_fc_dir}/cosign" || true)
+  if [ "${_fc_got}" != "${_fc_want}" ]; then
+    rm -rf "${_fc_dir}"
+    echo >&2 "The downloaded cosign does not match its pinned SHA-256 (expected ${_fc_want}, got ${_fc_got:-nothing})."
+    return 2
+  fi
+  chmod 0700 "${_fc_dir}/cosign"
+  echo "${_fc_dir}/cosign"
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  verify_checksums_signature
+#   DESCRIPTION:  Verify the Sigstore signature over a release's checksums.txt.
+#    PARAMETERS:  1) checksums.txt  2) its .sig  3) its .pem
+#       RETURNS:  0 when verified, or when no cosign could be had and -k was
+#                 given; 1 otherwise. Messages go to stderr.
+#----------------------------------------------------------------------------------------------------------------------
+verify_checksums_signature() {
+  _vs_dir=""
+  if is_available cosign; then
+    _vs_cosign=cosign
+  else
+    _vs_rc=0
+    _vs_cosign=$(fetch_cosign) || _vs_rc=$?
+    if [ "${_vs_rc}" -eq 2 ]; then
+      return 1
+    fi
+    if [ "${_vs_rc}" -ne 0 ]; then
+      if [ "${ALLOW_NO_COSIGN:-0}" = 1 ]; then
+        throw_warning "No cosign available: the release signature over checksums.txt is NOT verified (-k). Only the SHA-256 check protects this download." >&2
+        return 0
+      fi
+      echo >&2 "Refusing to continue without verifying the release signature. Install cosign, or rerun with -k to accept the checksum check alone."
+      return 1
+    fi
+    _vs_dir="${_vs_cosign%/cosign}"
+  fi
+  echo >&2 "Verifying release signature with cosign"
+  _vs_rc=0
+  # cosign fetches the Sigstore trust root and the transparency-log entry on
+  # its own; HTTPS_PROXY (set only with an egress chain) keeps that on the
+  # chosen path too.
+  env ${EGRESS_PROXY_ENV:+"HTTPS_PROXY=${EGRESS_PROXY_ENV}"} "${_vs_cosign}" verify-blob \
+    --certificate "$3" \
+    --signature "$2" \
+    --certificate-identity-regexp "${RELEASE_SIGNER}" \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    "$1" >/dev/null 2>&1 || _vs_rc=1
+  if [ -n "${_vs_dir}" ]; then
+    rm -rf "${_vs_dir}"
+  fi
+  if [ "${_vs_rc}" -ne 0 ]; then
+    echo >&2 "cosign signature verification failed for checksums.txt."
+    return 1
+  fi
+  echo >&2 "Signature OK (cosign)"
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  is_onion_url
 #   DESCRIPTION:  True when the URL's host is a Tor onion service.
 #----------------------------------------------------------------------------------------------------------------------

@@ -178,17 +178,29 @@ deb/rpm from a given URL.
 ### How downloads are verified
 
 The installer and updater check every downloaded release asset against
-the release's `checksums.txt`. When `cosign` is on the `PATH`, they first
-verify the Sigstore signature over `checksums.txt`, and accept it only if
-the signing certificate belongs to the ProxiPort release workflow running
-for a version tag:
+the release's `checksums.txt`. Before that, they verify the Sigstore
+signature over `checksums.txt` with `cosign`, and accept it only if the
+signing certificate belongs to the ProxiPort release workflow running for
+a version tag:
 
 ```
 ^https://github\.com/proximile/proxiport/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$
 ```
 
 A signature from any other repository, workflow or branch is rejected,
-and the install or update stops. You can run the same check by hand:
+and the install or update stops.
+
+If `cosign` isn't installed, the scripts download a pinned cosign release
+(v3.1.4, about 150 MB) for the check, compare it against its published
+SHA-256, and delete it afterwards. On Linux it's kept in `/var/tmp`, or in
+`PROXIPORT_COSIGN_TMPDIR` if set. A download that doesn't match its pinned
+hash always stops the run. If no cosign can be had at all (no build for
+the CPU, no network path to GitHub, not enough disk space), the run stops
+too, unless you pass `-k`: then it goes on with the SHA-256 check alone,
+which catches corruption but not a release replaced together with its
+`checksums.txt`.
+
+You can run the same check by hand:
 
 ```bash
 cosign verify-blob \
