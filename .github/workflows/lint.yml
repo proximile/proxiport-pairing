@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
 
       - name: golangci-lint
         # v6 + "latest" resolves to the golangci-lint v1 series, which is
