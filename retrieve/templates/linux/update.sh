@@ -166,6 +166,7 @@ update() {
 
   if [ -n "$PKG_URL" ]; then
       # Update from a user-supplied package URL (-z). No version check.
+      warn_unverified_pkg_url
       abort_on_proxiport_subprocess
       check_scripts
       check_sudo
@@ -498,8 +499,8 @@ Options:
 -k  if cosign is not installed and the pinned cosign can't be downloaded, update with the
     SHA-256 check only instead of stopping. A downloaded cosign (about 150 MB) is kept in
     \$PROXIPORT_COSIGN_TMPDIR (default /var/tmp) during the check.
--z  Download the proxiport client deb|rpm from the given URL instead of using GitHub releases.
-    See environment variables.
+-z  Install the deb|rpm at the given URL instead of the GitHub release. It is NOT
+    checked against the release's signed checksums. See environment variables.
 EOF
 }
 

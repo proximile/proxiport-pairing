@@ -4,7 +4,7 @@ if ($h)
 Invoking without parameters updates to the latest stable version.
 
 Parameters:
--t  Use the latest unstable version.
+-t  No effect: there are no unstable releases.
 -x  Enable command and script execution without asking for confirmation.
 -d  Disable command and script execution.
 -v [version] Upgrade to the specified version.

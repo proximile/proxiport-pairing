@@ -12,7 +12,7 @@
         Enable the execution of scripts via proxiport.
 
         .PARAMETER t
-        Use the latest unstable development release. Dangerous!
+        No effect: there are no unstable releases. The stable release is installed.
 
         .PARAMETER r
         Enable file recption
