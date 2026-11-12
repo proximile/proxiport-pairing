@@ -892,40 +892,6 @@ validate_custom_user() {
     fi
 }
 
-# Check if it's a supported debian system
-is_debian() {
-    if [ "$NO_REPO" -eq 1 ]; then
-        return 1
-    fi
-    if which apt-get >/dev/null 2>&1 && test -e /etc/apt/sources.list.d/; then
-        true
-    else
-        return 1
-    fi
-    DIST_SUPPORTED="jammy focal bionic bullseye buster bookworm"
-    for DIST in $DIST_SUPPORTED; do
-        if grep -qi "CODENAME.*$DIST" /etc/os-release; then
-            return 0
-        fi
-    done
-    return 1
-}
-
-is_rhel() {
-    if [ "$NO_REPO" -eq 1 ]; then
-        return 1
-    fi
-    if grep -q "VERSION=.[6-7]" /etc/os-release; then
-        throw_info "RHEL/CentOS too old for RPM installation. Switching to tar.gz package."
-        return 1
-    fi
-
-    if which rpm >/dev/null 2>&1 && test -e /etc/yum.repos.d; then
-        return 0
-    fi
-    return 1
-}
-
 # A package from a custom URL (-z) has no published checksums, so it cannot be
 # checked the way a release download is. Say so every time one is used.
 warn_unverified_pkg_url() {
