@@ -173,7 +173,7 @@ binary is replaced. Give the answers as switches (`-s` or `-n` for sudo,
 `sudo sh proxiport-update.sh -n -d` from cron or ssh. Without them a
 non-interactive run stops with an error. `sh proxiport-update.sh -h` lists
 the remaining options, including `-u` to uninstall and `-z` to install a
-deb/rpm from a given URL.
+deb/rpm from a given URL (see the note on `-z` below).
 
 ### How downloads are verified
 
@@ -199,6 +199,13 @@ the CPU, no network path to GitHub, not enough disk space), the run stops
 too, unless you pass `-k`: then it goes on with the SHA-256 check alone,
 which catches corruption but not a release replaced together with its
 `checksums.txt`.
+
+A file given with `-z` (Linux) or `-pkgUrl` (Windows) is not a release
+asset: it has no published checksums, and the scripts install it without
+either check and print a warning. The Windows installer accepts only an
+`https://` URL for it; the Linux scripts also accept `http://` and warn
+that the download can then be replaced on the way. Verify such a file
+yourself before you point an installer at it.
 
 You can run the same check by hand:
 

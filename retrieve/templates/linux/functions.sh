@@ -883,60 +883,6 @@ clean_up_legacy_installation() {
     fi
 }
 
-install_via_deb_repo() {
-    if [ -z "$RELEASE" ]; then
-        throw_fatal "install_via_deb_repo() \$RELEASE undefined"
-    fi
-    validate_custom_user
-    if [ -e /etc/apt/trusted.gpg.d/proxiport.gpg ] && dpkg -l | grep -q proxiport; then
-        throw_info "System is already using the proxiport deb repo."
-    else
-        throw_info "ProxiPort will use Debian package ..."
-        # shellcheck source=/dev/null
-        . /etc/os-release
-        if [ -n "$UBUNTU_CODENAME" ]; then
-            CODENAME=$UBUNTU_CODENAME
-        else
-            CODENAME=$VERSION_CODENAME
-        fi
-        curl -sf https://repo.proxiport.io/dearmor.gpg >/etc/apt/trusted.gpg.d/proxiport.gpg
-        echo "deb [signed-by=/etc/apt/trusted.gpg.d/proxiport.gpg] https://repo.proxiport.io/deb ${CODENAME} ${RELEASE}" >/etc/apt/sources.list.d/proxiport.list
-    fi
-    apt-get update
-    if dpkg -s proxiport >/dev/null 2>&1 && ! [ -e /etc/proxiport/proxiport.conf ]; then
-        throw_warning "Broken DEB package installation found."
-        throw_debug "Will remove old package first."
-        apt-get -y --purge remove proxiport
-    fi
-    DEBIAN_FRONTEND=noninteractive apt-get --yes -o Dpkg::Options::="--force-confold" install proxiport
-    TARGET_VERSION=$(proxiport --version | cut -d" " -f2)
-    clean_up_legacy_installation
-}
-
-install_via_rpm_repo() {
-    if [ -z "$RELEASE" ]; then
-        throw_fatal "install_via_rpm_repo() \$RELEASE undefined"
-    fi
-    validate_custom_user
-    if [ -e /etc/yum.repos.d/proxiport.repo ] && rpm -qa | grep -q proxiport; then
-        throw_info "System is already using the proxiport yum repo."
-    else
-        throw_info "ProxiPort will use RPM package ..."
-        rpm --import https://repo.proxiport.io/key.gpg
-        cat <<EOF >/etc/yum.repos.d/proxiport.repo
-[proxiport-stable]
-name=ProxiPort $RELEASE
-baseurl=https://repo.proxiport.io/rpm/$RELEASE/
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.proxiport.io/key.gpg
-EOF
-    fi
-    dnf -y install proxiport --refresh
-    TARGET_VERSION=$(proxiport --version | cut -d" " -f2)
-    clean_up_legacy_installation
-}
-
 validate_custom_user() {
     # Keyed off the flag, not off a literal name: the default account moved to
     # proxiport-agent, so comparing against "proxiport" would have rejected
@@ -978,6 +924,16 @@ is_rhel() {
         return 0
     fi
     return 1
+}
+
+# A package from a custom URL (-z) has no published checksums, so it cannot be
+# checked the way a release download is. Say so every time one is used.
+warn_unverified_pkg_url() {
+    throw_warning "The file from ${PKG_URL} is NOT checked against the release's signed checksums."
+    throw_warning "Install it only if you have verified it yourself."
+    case "${PKG_URL}" in
+    http://*) throw_warning "It is also fetched over plain HTTP, so anyone on the network path can replace it." ;;
+    esac
 }
 
 validate_pkg_url() {

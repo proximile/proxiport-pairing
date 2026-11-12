@@ -1,10 +1,9 @@
-$release = If ($t)
+# -t asked for an unstable build. ProxiPort publishes no prereleases, so the
+# release is installed either way. The switch is still accepted, so an
+# existing command line keeps working.
+if ($t)
 {
-    "unstable"
-}
-Else
-{
-    "stable"
+    Write-Output "* -t was given, but ProxiPort publishes no unstable releases. Installing the stable release."
 }
 $myLocation = (Get-Location).path
 $installDir = "$( $Env:Programfiles )\proxiport"

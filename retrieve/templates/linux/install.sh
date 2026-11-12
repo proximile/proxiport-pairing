@@ -251,7 +251,6 @@ download_and_extract_from_url() {
     [ -e "${DL}" ] && rm -f "${DL}"
     # shellcheck disable=SC2086
     egress_curl -LSs "${DOWNLOAD_URL}" -o "${DL}" ${DL_AUTH}
-    echo "Verifying download"
     FILES_IN_TAR=$(tar tzf "${DL}")
     confirm "Package contains $(echo "$FILES_IN_TAR" | wc -w) files"
     tar -xzof "${DL}" proxiport
@@ -546,13 +545,14 @@ install_client() {
   if runs_with_selinux && [ "$SELINUX_FORCE" -ne 1 ]; then
     echo ""
     echo "Your system has SELinux enabled. This installer will not create the needed policies."
-    echo "ProxiPort will not connect with out the right policies."
+    echo "ProxiPort will not connect without the right policies."
     echo "Read more https://docs.proxiport.net/install/#installer-switches"
-    echo "Excute '$0 ${RAW_ARGS} -l' to skip this warning and install anyways. You must create the polcies later."
+    echo "Execute '$0 ${RAW_ARGS} -l' to skip this warning and install anyway. You must create the policies later."
     exit 1
   fi
   test_connection
   if [ -n "$PKG_URL" ]; then
+          warn_unverified_pkg_url
           if is_debian; then
               install_from_deb_download
           elif is_rhel; then
@@ -562,13 +562,9 @@ install_client() {
               install_bin proxiport
           fi
       else
-          # ProxiPort does not yet publish a Debian or RPM repository,
-          # so don't attempt `install_via_deb_repo` / `install_via_rpm_repo`
-          # — they would try to apt-add a non-existent
-          # repo.proximile.io and silently fail. Use the GitHub-releases
-          # tarball on every distro; the binary is statically linked.
-          # When a native package repo is published, restore the
-          # is_debian / is_rhel branches above this one.
+          # ProxiPort publishes no Debian or RPM repository. Use the
+          # GitHub-releases tarball on every distro; the binary is
+          # statically linked.
           download_and_extract
           install_bin proxiport
   fi
@@ -723,7 +719,7 @@ Usage $0 [OPTION(s)]
 Options:
 -h  Print this help message.
 -f  Force  overwriting existing files and configurations.
--t  Use the latest unstable version (DANGEROUS!).
+-t  No effect: there are no unstable releases. The latest release is installed.
 -u  Uninstall the proxiport client and all configurations and logs.
 -x  Enable unrestricted command execution in proxiport.conf.
 -s  Create sudo rules to grant full root access to the proxiport user.
@@ -734,10 +730,14 @@ Options:
 -l  Install with SELinux enabled.
 -g <TAG> Add an extra tag to the client.
 -d Do not use /etc/machine-id to identify this machine. A random UUID will be used instead.
--p  Do not use the RPM/DEB repository. Forces tar.gz installation.
+-p  With -z, expect a tar.gz on every host. Without -z it changes nothing: the release tar.gz
+    is always what gets installed.
 -k  If cosign is not installed and the pinned cosign can't be downloaded (no build for this CPU,
     no network path, under 150 MB free in /var/tmp), install with the SHA-256 check only instead of stopping.
--z  Download the proxiport client tar.gz from the given URL instead of using GitHub releases. See environment variables.
+-z  Install the file at the given URL instead of the GitHub release. It is NOT checked
+    against the release's signed checksums. Hosts where the installer uses packages (apt on
+    Debian buster to bookworm or Ubuntu bionic to jammy; rpm with /etc/yum.repos.d) need a
+    .deb or .rpm; any other host, or -p, a tar.gz. See environment variables.
 -o  Connect over Tor: reach the server through the local tor daemon (socks5h://127.0.0.1:9050).
     Shorthand for -e socks5h://127.0.0.1:9050.
 -e <ENTRY> Add an entry to the agent's egress chain, in the order given: a proxy URL
@@ -846,7 +846,6 @@ RAW_ARGS=$*
 ACTION=install_client
 ENABLE_COMMANDS=0
 ENABLE_SUDO=0
-RELEASE=stable
 SELINUX_FORCE=0
 ENABLE_FILEREC=0
 ENABLE_FILEREC_SUDO=0
@@ -874,7 +873,7 @@ while getopts 'phvfcsuxstldrboka:e:g:z:' opt; do
   u) ACTION=uninstall ;;
   x) ENABLE_COMMANDS=1 ;;
   s) ENABLE_SUDO=1 ;;
-  t) RELEASE=unstable ;;
+  t) echo "-t was given, but ProxiPort publishes no unstable releases. Installing the latest release." ;;
   l) SELINUX_FORCE=1 ;;
   r) ENABLE_FILEREC=1 ;;
   b) ENABLE_FILEREC_SUDO=1 ;;
