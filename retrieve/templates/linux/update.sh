@@ -351,7 +351,7 @@ enable_monitoring() {
   cat <<EOF >>"$CONFIG_FILE"
 [monitoring]
   ## The proxiport client can collect and report performance data of the operating system.
-  ## https://docs.proxiport.net/docs/no17-monitoring.html
+  ## https://docs.proxiport.net/monitoring/
   ## Monitoring is enabled by default
   enabled = true
   ## How often (seconds) monitoring data should be collected.
@@ -411,7 +411,7 @@ insert_watchdog() {
   ## Write a state file to {data_dir}/state.json that can be evaluated by external watchdog implementations.
   ## On Linux this also enables the systemd watchdog integration using the systemd notify socket.
   ## Requires max_retry_count = -1 and keep_alive > 0
-  ## Read more https://docs.proxiport.net/advanced/watchdog-integration/
+  ## Read more https://docs.proxiport.net/watchdog/
   ## Disabled by default.
   #watchdog_integration = false
 EOF

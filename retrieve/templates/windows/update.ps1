@@ -166,7 +166,7 @@ function Add-FileRecption
   ## Receive files pushed by the server, enabled by default
   # enabled = true
   ## The proxiport client will reject writing files to any of the following folders and its subfolders.
-  ## https://docs.proxiport.net/docs/no18-file-upload.html
+  ## https://docs.proxiport.net/tunnel-hosting/#file-reception
   ## Wildcards (glob) are supported.
   ## Linux defaults
   # protected = ['/bin', '/sbin', '/boot', '/usr/bin', '/usr/sbin', '/dev', '/lib*', '/run']
@@ -186,7 +186,7 @@ function Add-Monitoring
     Add-Content -Path $configFile -Value "
 [monitoring]
   ## The proxiport client can collect and report performance data of the operating system.
-  ## https://docs.proxiport.net/docs/no17-monitoring.html
+  ## https://docs.proxiport.net/monitoring/
   ## Monitoring is enabled by default
   enabled = true
   ## How often (seconds) monitoring data should be collected.
@@ -256,7 +256,7 @@ function Add-WatchdogIntegration
   ## Write a state file to {data_dir}/state.json that can be evaluated by external watchdog implementations.
   ## On Linux this also enables the systemd watchdog integration by using the systemd notify socket.
   ## Requires max_retry_count = -1 and keep_alive > 0
-  ## Read more https://docs.proxiport.net/advanced/watchdog-integration/
+  ## Read more https://docs.proxiport.net/watchdog/
   ## Disabled by default.
   #watchdog_integration = false
 "

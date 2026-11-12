@@ -42,7 +42,7 @@
         Install and connect with script execution disabled.
 
         .LINK
-        Online help: https://docs.proxiport.net/connecting-clients#advanced-pairing-options
+        Online help: https://docs.proxiport.net/install/#installer-switches
 #>
 #Requires -RunAsAdministrator
 # Definition of command line parameters
