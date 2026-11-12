@@ -31,6 +31,9 @@
 #           the open internet.
 #   onion   a .onion server with no switches: Tor is the policy by itself,
 #           and the onion name must never reach curl without a proxy.
+#   rpm-refused  -z with an .rpm on a host that has no rpm: the file type
+#           decides how -z installs, so the installer must stop and say why
+#           before it downloads anything.
 #
 # Every scenario also asserts ownership of what the scripts install. The stub
 # release archives carry uid/gid 1001 on every member, as an archive built on a
@@ -57,7 +60,7 @@ if [ "$(id -u)" -ne 0 ]; then
         exit 1
     fi
     rc=0
-    for scenario in fresh legacy uninstall update egress egress-closed onion; do
+    for scenario in fresh legacy uninstall update egress egress-closed onion rpm-refused; do
         echo "linux_installer_test: scenario '$scenario' in $IMAGE"
         docker run --rm -v "$REPO_ROOT":/src:ro -w /src \
             -e "PAIRING_INSTALLER_TEST_SCENARIO=$scenario" "$IMAGE" \
@@ -364,7 +367,15 @@ STK_WATCH=$!
 # in front of curl records every call's arguments, and `egress` runs a real
 # SOCKS5 server for the chain to go through.
 # ---------------------------------------------------------------------------
-INSTALL_FLAGS="-p -x"
+# The stub release is a tar.gz, which the installer must accept on this Debian
+# image without -p. One scenario still passes -p, which no longer does
+# anything, to show that old command lines keep working.
+INSTALL_FLAGS="-x"
+PKG_SUFFIX="tar.gz"
+case "$SCENARIO" in
+    legacy) INSTALL_FLAGS="-p -x" ;;
+    rpm-refused) PKG_SUFFIX="rpm" ;;
+esac
 case "$SCENARIO" in
     egress|egress-closed|onion)
         cat > /usr/local/sbin/curl <<'CURL'
@@ -388,15 +399,46 @@ case "$SCENARIO" in
 esac
 
 # ---------------------------------------------------------------------------
-# Run the real installer. -p forces the tar.gz path, -z points it at the stub
-# release, -x turns on command execution so the scripts directory is created.
+# Run the real installer. -z points it at the stub release, -x turns on
+# command execution so the scripts directory is created.
 # ---------------------------------------------------------------------------
 set +e
 # shellcheck disable=SC2086
-sh "$RENDERED" $INSTALL_FLAGS -z "http://127.0.0.1:8099/proxiport_0.9.0_linux_${ARCH}.tar.gz" \
+sh "$RENDERED" $INSTALL_FLAGS -z "http://127.0.0.1:8099/proxiport_0.9.0_linux_${ARCH}.${PKG_SUFFIX}" \
    > "$WORK/install.log" 2>&1
 install_rc=$?
 set -e
+
+if [ "$SCENARIO" = "rpm-refused" ]; then
+    if command -v rpm >/dev/null 2>&1; then
+        echo "linux_installer_test: $IMAGE has rpm, so this scenario proves nothing." >&2
+        exit 1
+    fi
+    if [ "$install_rc" -ne 0 ]; then
+        pass "the installer refused (exit $install_rc)"
+    else
+        fail "the installer completed with an .rpm on a host without rpm"
+    fi
+    if grep -q 'An .rpm needs rpm' "$WORK/install.log"; then
+        pass "the refusal says an .rpm needs rpm"
+    else
+        fail "the refusal does not say why: $(tail -5 "$WORK/install.log" | tr '\n' '|')"
+    fi
+    if grep -q 'Downloading from' "$WORK/install.log" || [ -e /usr/local/bin/proxiport ] \
+       || [ -e /etc/proxiport/proxiport.conf ]; then
+        fail "the installer downloaded or wrote something before refusing"
+    else
+        pass "nothing was downloaded or written before the refusal"
+    fi
+    kill "$STK_WATCH" 2>/dev/null || true
+    printf '\n'
+    if [ "$failures" -ne 0 ]; then
+        printf '%d assertion(s) failed in scenario %s\n' "$failures" "$SCENARIO"
+        exit 1
+    fi
+    printf 'linux installer (%s): all assertions passed\n' "$SCENARIO"
+    exit 0
+fi
 
 if [ "$SCENARIO" = "egress-closed" ] || [ "$SCENARIO" = "onion" ]; then
     # Both must refuse: there is no tor daemon on 9050. What matters is what

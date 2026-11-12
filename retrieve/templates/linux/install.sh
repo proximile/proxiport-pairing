@@ -553,14 +553,25 @@ install_client() {
   test_connection
   if [ -n "$PKG_URL" ]; then
           warn_unverified_pkg_url
-          if is_debian; then
+          # The file type decides how it is installed, not the distribution:
+          # a list of distribution names goes out of date with every release.
+          case "$PKG_URL" in
+          *.deb)
+              is_available apt-get || abort "A .deb needs apt-get, which this host does not have. Give -z a tar.gz instead."
               install_from_deb_download
-          elif is_rhel; then
+              ;;
+          *.rpm)
+              is_available rpm || abort "An .rpm needs rpm, which this host does not have. Give -z a tar.gz instead."
+              if grep -q "VERSION=.[6-7]" /etc/os-release; then
+                  abort "RHEL/CentOS 6 and 7 are too old for the rpm. Give -z a tar.gz instead."
+              fi
               install_from_rpm_download
-          else
+              ;;
+          *)
               download_and_extract_from_url
               install_bin proxiport
-          fi
+              ;;
+          esac
       else
           # ProxiPort publishes no Debian or RPM repository. Use the
           # GitHub-releases tarball on every distro; the binary is
@@ -730,14 +741,12 @@ Options:
 -l  Install with SELinux enabled.
 -g <TAG> Add an extra tag to the client.
 -d Do not use /etc/machine-id to identify this machine. A random UUID will be used instead.
--p  With -z, expect a tar.gz on every host. Without -z it changes nothing: the release tar.gz
-    is always what gets installed.
+-p  No effect. It is accepted so that existing command lines keep working.
 -k  If cosign is not installed and the pinned cosign can't be downloaded (no build for this CPU,
     no network path, under 150 MB free in /var/tmp), install with the SHA-256 check only instead of stopping.
 -z  Install the file at the given URL instead of the GitHub release. It is NOT checked
-    against the release's signed checksums. Hosts where the installer uses packages (apt on
-    Debian buster to bookworm or Ubuntu bionic to jammy; rpm with /etc/yum.repos.d) need a
-    .deb or .rpm; any other host, or -p, a tar.gz. See environment variables.
+    against the release's signed checksums. A tar.gz works on every host; a .deb needs
+    apt-get and an .rpm needs rpm. See environment variables.
 -o  Connect over Tor: reach the server through the local tor daemon (socks5h://127.0.0.1:9050).
     Shorthand for -e socks5h://127.0.0.1:9050.
 -e <ENTRY> Add an entry to the agent's egress chain, in the order given: a proxy URL
@@ -850,7 +859,6 @@ SELINUX_FORCE=0
 ENABLE_FILEREC=0
 ENABLE_FILEREC_SUDO=0
 XTAG=""
-NO_REPO=0
 USER_EXPLICIT=0
 EGRESS=""
 EGRESS_ACTIVE=""
@@ -881,7 +889,7 @@ while getopts 'phvfcsuxstldrboka:e:g:z:' opt; do
   g) XTAG=${OPTARG} ;;
   z) export PKG_URL="${OPTARG}" ;;
   d) MACHINE_ID=$(gen_uuid) ;;
-  p) NO_REPO=1 ;;
+  p) : ;; # No effect; kept so that existing command lines keep working.
   k) ALLOW_NO_COSIGN=1 ;;
   o) add_egress "socks5h://127.0.0.1:9050" ;;
   e) add_egress "${OPTARG}" ;;
