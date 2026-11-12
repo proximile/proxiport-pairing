@@ -547,7 +547,7 @@ install_client() {
     echo ""
     echo "Your system has SELinux enabled. This installer will not create the needed policies."
     echo "ProxiPort will not connect with out the right policies."
-    echo "Read more https://docs.proxiport.net/digging-deeper/advanced-client-management/run-with-selinux"
+    echo "Read more https://docs.proxiport.net/install/#installer-switches"
     echo "Excute '$0 ${RAW_ARGS} -l' to skip this warning and install anyways. You must create the polcies later."
     exit 1
   fi
@@ -752,7 +752,7 @@ Environment variables:
   If PROXIPORT_INSTALLER_DL_USERNAME and PROXIPORT_INSTALLER_DL_PASSWORD are set, downloads of custom packages triggered with
   '-z' are initiated with HTTP basic authentication.
 
-Learn more https://docs.proxiport.net/install/#agent
+Learn more https://docs.proxiport.net/install/#installer-switches
 Tor / VPN  https://docs.proxiport.net/anonymous-transport/
 EOF
   exit 0

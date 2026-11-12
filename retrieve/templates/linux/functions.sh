@@ -679,7 +679,7 @@ enable_file_reception() {
   ## Receive files pushed by the server, enabled by default
   # enabled = true
   ## The proxiport client will reject writing files to any of the following folders and its subfolders.
-  ## https://docs.proxiport.net/docs/no18-file-reception.html
+  ## https://docs.proxiport.net/tunnel-hosting/#file-reception
   ## Wildcards (glob) are supported.
   ## Linux defaults
   # protected = ['/bin', '/sbin', '/boot', '/usr/bin', '/usr/sbin', '/dev', '/lib*', '/run']
