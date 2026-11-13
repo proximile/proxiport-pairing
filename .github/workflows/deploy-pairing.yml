@@ -5,9 +5,16 @@ name: deploy-pairing
 # it on the canonical pairing droplet behind
 # https://pairing.proxiport.net/.
 #
-# Requires the repo secret `PAIRING_DEPLOY_SSH_KEY` — an Ed25519
-# private key whose public half is in /root/.ssh/authorized_keys
-# on the droplet. Use a key dedicated to this deploy.
+# Requires two repo secrets:
+#   PAIRING_DEPLOY_SSH_KEY  an Ed25519 private key whose public half is in
+#                           /root/.ssh/authorized_keys on the droplet. Use
+#                           a key dedicated to this deploy;
+#   PAIRING_KNOWN_HOSTS     the droplet's SSH host key in known_hosts format
+#                           (`pairing.proxiport.net ssh-ed25519 AAAA...`,
+#                           taken from /etc/ssh/ssh_host_ed25519_key.pub on
+#                           the droplet).
+# Without the host key the deploy stops: it does not learn the key from
+# the network at deploy time.
 
 on:
   release:
@@ -68,7 +75,7 @@ jobs:
           ASSET="proxiport-pairing_${VER}_linux_x86_64.deb"
 
           gh release download "$TAG" \
-              --repo "${{ github.repository }}" \
+              --repo "$GITHUB_REPOSITORY" \
               --pattern "$ASSET" \
               --pattern "checksums.txt" \
               --pattern "checksums.txt.sig" \
@@ -79,7 +86,7 @@ jobs:
           cosign verify-blob \
               --certificate stage/checksums.txt.pem \
               --signature stage/checksums.txt.sig \
-              --certificate-identity-regexp '^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+              --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\$" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               stage/checksums.txt
 
@@ -89,21 +96,22 @@ jobs:
 
       - name: Configure SSH
         env:
-          # Optional: pin the droplet's SSH host key. When set, trust exactly
-          # this key instead of trust-on-first-use from ssh-keyscan (which a
-          # runner-side MITM could poison). Populate with the droplet's
-          # `/etc/ssh/ssh_host_ed25519_key.pub` in known_hosts format.
+          # The droplet's SSH host key, in known_hosts format. The deploy
+          # trusts exactly this key, and it is required: a key scanned from
+          # the network at deploy time is whatever answered, which is what
+          # host-key checking exists to rule out.
           PAIRING_KNOWN_HOSTS: ${{ secrets.PAIRING_KNOWN_HOSTS }}
+          PAIRING_DEPLOY_SSH_KEY: ${{ secrets.PAIRING_DEPLOY_SSH_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.PAIRING_DEPLOY_SSH_KEY }}" > ~/.ssh/pairing_deploy
-          chmod 0600 ~/.ssh/pairing_deploy
-          if [[ -n "$PAIRING_KNOWN_HOSTS" ]]; then
-            printf '%s\n' "$PAIRING_KNOWN_HOSTS" >> ~/.ssh/known_hosts
-          else
-            echo "::warning::PAIRING_KNOWN_HOSTS not set; falling back to TOFU ssh-keyscan"
-            ssh-keyscan -H "$PAIRING_HOST" >> ~/.ssh/known_hosts
+          set -euo pipefail
+          if [[ -z "$PAIRING_KNOWN_HOSTS" ]]; then
+            echo "PAIRING_KNOWN_HOSTS is not set; refusing to deploy to a host whose key is not pinned" >&2
+            exit 1
           fi
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PAIRING_DEPLOY_SSH_KEY" > ~/.ssh/pairing_deploy
+          printf '%s\n' "$PAIRING_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
       - name: Push .deb to droplet and install
         run: |

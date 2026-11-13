@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 permissions: {}
 
@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,6 +25,34 @@ jobs:
           # fetch-depth: 0 is required for the change log to work correctly.
           # See https://goreleaser.com/ci/actions/
           fetch-depth: 0
+
+      # A release is built only from a version tag whose commit is on main
+      # and has passed every check. Without this a tag on any commit -- a
+      # branch that was never merged, a commit whose checks failed -- would
+      # be built and offered for approval like any other.
+      - name: Check the tag, its commit and its check results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "not a release version tag: $REF" >&2
+            exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "the tagged commit $sha is not on main" >&2
+            exit 1
+          fi
+          for wf in go_test.yml lint.yml windows_scripts.yml; do
+            passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" \
+              --commit "$sha" --status success --json databaseId --jq length)
+            if [ "$passed" -lt 1 ]; then
+              echo "no successful run of $wf for $sha; run it on main first" >&2
+              exit 1
+            fi
+          done
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
