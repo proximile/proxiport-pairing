@@ -97,16 +97,28 @@ nfpms:
       - src: ./proxiport-pairing.conf.example
         dst: /etc/proxiport/proxiport-pairing.conf.example
         type: config|noreplace
+        file_info:
+          mode: 0644
       - src: ./opt/systemd/proxiport-pairing.service
         dst: /lib/systemd/system/proxiport-pairing.service
+        file_info:
+          mode: 0644
       - src: ./LICENSE
         dst: /usr/share/doc/proxiport-pairing/LICENSE
+        file_info:
+          mode: 0644
       - src: ./LICENSE-MIT
         dst: /usr/share/doc/proxiport-pairing/LICENSE-MIT
+        file_info:
+          mode: 0644
       - src: ./NOTICE
         dst: /usr/share/doc/proxiport-pairing/NOTICE
+        file_info:
+          mode: 0644
       - src: ./README.md
         dst: /usr/share/doc/proxiport-pairing/README.md
+        file_info:
+          mode: 0644
     scripts:
       preinstall: ./opt/packaging/preinstall.sh
       postinstall: ./opt/packaging/postinstall.sh
